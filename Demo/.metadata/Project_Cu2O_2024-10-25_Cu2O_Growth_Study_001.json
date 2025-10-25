@@ -1,0 +1,153 @@
+{
+  "metadata": {
+    "project": "Project_Cu2O",
+    "experiment": "2024-10-25",
+    "run_id": "Cu2O_Growth_Study_001",
+    "sample_id": "Sample_Cu2O_001",
+    "reaction": {
+      "chemicals": [
+        {
+          "name": "CuCl2",
+          "concentration": 0.1,
+          "concentration_unit": "mM",
+          "volume_uL": 500
+        },
+        {
+          "name": "NaOH",
+          "concentration": 0.05,
+          "concentration_unit": "mM",
+          "volume_uL": 200
+        },
+        {
+          "name": "Ascorbic Acid",
+          "concentration": 1.0,
+          "concentration_unit": "mM",
+          "volume_uL": 100
+        }
+      ],
+      "temperature_C": 65.0,
+      "stir_time_s": 300,
+      "reaction_time_s": 1800,
+      "pH": 7.5,
+      "solvent": "Water",
+      "conductor": "CFN Users",
+      "description": "Cu2O nanoparticle growth study with time-resolved characterization"
+    },
+    "notes": "Using your droplet reactor setup",
+    "tags": [
+      "Cu2O",
+      "time_series",
+      "optimization",
+      "2024"
+    ],
+    "created_at": "2025-10-24T22:58:21.101101"
+  },
+  "data": {
+    "uvvis": {
+      "file_paths": [
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/Project_Cu2O/UV_Vis/2024-10-25/Cu2O_Growth_Study_001/uvvis_001.csv",
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/Project_Cu2O/UV_Vis/2024-10-25/Cu2O_Growth_Study_001/uvvis_002.csv",
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/Project_Cu2O/UV_Vis/2024-10-25/Cu2O_Growth_Study_001/uvvis_003.csv",
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/Project_Cu2O/UV_Vis/2024-10-25/Cu2O_Growth_Study_001/uvvis_004.csv",
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/Project_Cu2O/UV_Vis/2024-10-25/Cu2O_Growth_Study_001/uvvis_005.csv",
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/Project_Cu2O/UV_Vis/2024-10-25/Cu2O_Growth_Study_001/uvvis_006.csv",
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/Project_Cu2O/UV_Vis/2024-10-25/Cu2O_Growth_Study_001/uvvis_007.csv"
+      ],
+      "metadata": {
+        "instrument": "OceanOptics",
+        "operator": "CFN Users",
+        "wavelength_range_nm": [
+          200,
+          800
+        ],
+        "integration_time_ms": 100,
+        "time_points": [
+          0,
+          30,
+          60,
+          120,
+          180,
+          300,
+          600
+        ]
+      },
+      "data_type": "uvvis"
+    },
+    "saxs": {
+      "file_paths": [
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/Project_Cu2O/SAXS/2024-10-25/Cu2O_Growth_Study_001/saxs_001.csv",
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/Project_Cu2O/SAXS/2024-10-25/Cu2O_Growth_Study_001/saxs_002.csv",
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/Project_Cu2O/SAXS/2024-10-25/Cu2O_Growth_Study_001/saxs_003.csv",
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/Project_Cu2O/SAXS/2024-10-25/Cu2O_Growth_Study_001/saxs_004.csv",
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/Project_Cu2O/SAXS/2024-10-25/Cu2O_Growth_Study_001/saxs_005.csv",
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/Project_Cu2O/SAXS/2024-10-25/Cu2O_Growth_Study_001/saxs_006.csv",
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/Project_Cu2O/SAXS/2024-10-25/Cu2O_Growth_Study_001/saxs_007.csv"
+      ],
+      "metadata": {
+        "beamline": "CMS",
+        "energy_keV": 13.5,
+        "detector": "Pilatus 2M",
+        "sample_detector_distance_m": 5.0,
+        "time_points": [
+          0,
+          30,
+          60,
+          120,
+          180,
+          300,
+          600
+        ]
+      },
+      "data_type": "saxs"
+    },
+    "waxs": {
+      "file_paths": [
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/Project_Cu2O/WAXS/2024-10-25/Cu2O_Growth_Study_001/waxs_001.csv",
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/Project_Cu2O/WAXS/2024-10-25/Cu2O_Growth_Study_001/waxs_002.csv",
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/Project_Cu2O/WAXS/2024-10-25/Cu2O_Growth_Study_001/waxs_003.csv",
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/Project_Cu2O/WAXS/2024-10-25/Cu2O_Growth_Study_001/waxs_004.csv",
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/Project_Cu2O/WAXS/2024-10-25/Cu2O_Growth_Study_001/waxs_005.csv",
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/Project_Cu2O/WAXS/2024-10-25/Cu2O_Growth_Study_001/waxs_006.csv",
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/Project_Cu2O/WAXS/2024-10-25/Cu2O_Growth_Study_001/waxs_007.csv"
+      ],
+      "metadata": {
+        "instrument": "SMI",
+        "wavelength_A": 0.77,
+        "detector": "Pilatus 800K",
+        "sample_detector_distance_m": 0.277,
+        "exposure_time_second": 1.0,
+        "time_points": [
+          0,
+          30,
+          60,
+          120,
+          180,
+          300,
+          600
+        ]
+      },
+      "data_type": "waxs"
+    },
+    "sem": {
+      "file_paths": [
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/microscopy/sem_images/sem_t0000s_01.png",
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/microscopy/sem_images/sem_t0030s_02.png",
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/microscopy/sem_images/sem_t0060s_03.png",
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/microscopy/sem_images/sem_t0120s_04.png",
+        "/home/yuzhang/Repos/NanoOrganizer/Demo/microscopy/sem_images/sem_t0180s_05.png"
+      ],
+      "metadata": {
+        "instrument": "S4800",
+        "magnification": "50kX",
+        "voltage_kV": 15.0,
+        "operator": "CFN"
+      },
+      "data_type": "sem"
+    },
+    "tem": {
+      "file_paths": [],
+      "metadata": {},
+      "data_type": "tem"
+    }
+  }
+}

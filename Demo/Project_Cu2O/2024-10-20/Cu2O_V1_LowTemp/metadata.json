@@ -1,0 +1,43 @@
+{
+  "project": "Project_Cu2O",
+  "experiment": "2024-10-20",
+  "run_id": "Cu2O_V1_LowTemp",
+  "created_at": "2025-10-24T22:10:52.539910",
+  "reaction": {
+    "chemicals": [
+      {
+        "name": "CuCl2",
+        "concentration": 0.1,
+        "concentration_unit": "mM",
+        "volume_uL": 500
+      },
+      {
+        "name": "NaOH",
+        "concentration": 0.05,
+        "concentration_unit": "mM",
+        "volume_uL": 200
+      },
+      {
+        "name": "AA",
+        "concentration": 1.0,
+        "concentration_unit": "mM",
+        "volume_uL": 100
+      }
+    ],
+    "temperature_C": 60.0,
+    "stir_time_s": 300,
+    "reaction_time_s": 1800,
+    "pH": 7.5,
+    "solvent": "Water",
+    "description": "Low temperature Cu2O synthesis",
+    "conductor": "Dr. XX",
+    "additional_params": {}
+  },
+  "sample_id": "Sample_001",
+  "notes": "First attempt at low temperature synthesis",
+  "tags": [
+    "Cu2O",
+    "low_temp",
+    "optimization"
+  ]
+}

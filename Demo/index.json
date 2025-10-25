@@ -1,0 +1,17 @@
+{
+  "runs": [
+    {
+      "project": "Project_Cu2O",
+      "experiment": "2024-10-20",
+      "run_id": "Cu2O_V1_LowTemp",
+      "path": "/home/yuzhang/Repos/NanoOrganizer/Demo/Project_Cu2O/2024-10-20/Cu2O_V1_LowTemp",
+      "created_at": "2025-10-24T22:10:52.539910",
+      "tags": [
+        "Cu2O",
+        "low_temp",
+        "optimization"
+      ]
+    }
+  ],
+  "projects": {}
+}
