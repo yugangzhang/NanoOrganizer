@@ -20,10 +20,6 @@ import pandas as pd  # noqa: E402
 from pathlib import Path  # noqa: E402
 import io  # noqa: E402
 import sys  # noqa: E402
-import json  # noqa: E402
-import re  # noqa: E402
-import zipfile  # noqa: E402
-from datetime import datetime  # noqa: E402
 import plotly.graph_objects as go  # noqa: E402
 
 # Add parent directory to path for imports
@@ -31,41 +27,29 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from components.folder_browser import folder_browser  # noqa: E402
 from components.floating_button import floating_sidebar_toggle  # noqa: E402
 from components.fitting_adapters import (  # noqa: E402
+    PYFITTING_AVAILABLE,
+    PYFITTING_IMPORT_ERROR,
     PYSAXS_AVAILABLE,
     PYSAXS_IMPORT_ERROR,
     SAXS_MODEL_LABEL_TO_KEY,
     SAXS_MODEL_KEY_TO_LABEL,
+    build_batch_fit_zip_bytes as adapter_build_batch_fit_zip_bytes,
+    build_fit_zip_bytes as adapter_build_fit_zip_bytes,
+    create_fit_plot_figure as adapter_create_fit_plot_figure,
+    dedupe_sorted as adapter_dedupe_sorted,
+    format_metric as adapter_format_metric,
     get_saxs_model_detail,
     get_saxs_model_library_rows,
     get_saxs_shape_options,
     list_ml_models,
+    run_general_peak_fit,
     run_ml_prediction,
     run_saxs_fit,
+    simulate_saxs_curve,
+    sanitize_filename as adapter_sanitize_filename,
+    save_batch_fit_to_server as adapter_save_batch_fit_to_server,
+    save_single_fit_to_server as adapter_save_single_fit_to_server,
 )
-
-# Optional pyFitting dependency (tries installed package first, then sibling repo)
-PYFITTING_AVAILABLE = False
-PYFITTING_IMPORT_ERROR = ""
-ArrayData = None
-Fitter = None
-MultiPeakModel = None
-try:
-    from pyFitting import ArrayData, Fitter  # type: ignore
-    from pyFitting.models import MultiPeakModel  # type: ignore
-    PYFITTING_AVAILABLE = True
-except Exception as e:
-    _repo_parent = Path(__file__).resolve().parents[4]
-    _pyfitting_repo = _repo_parent / "pyFitting"
-    if _pyfitting_repo.exists():
-        sys.path.insert(0, str(_pyfitting_repo))
-        try:
-            from pyFitting import ArrayData, Fitter  # type: ignore
-            from pyFitting.models import MultiPeakModel  # type: ignore
-            PYFITTING_AVAILABLE = True
-        except Exception as e2:
-            PYFITTING_IMPORT_ERROR = str(e2)
-    else:
-        PYFITTING_IMPORT_ERROR = str(e)
 
 # User-mode restriction (set by nanoorganizer_user)
 _user_mode = st.session_state.get("user_mode", False)
@@ -199,12 +183,33 @@ def _shape_profile(x, center, width, shape, eta=0.5):
 
 def _dedupe_sorted(values, tol):
     """Sort values and remove near-duplicates."""
-    cleaned = sorted(float(v) for v in values)
-    unique = []
-    for value in cleaned:
-        if not unique or abs(value - unique[-1]) > tol:
-            unique.append(value)
-    return unique
+    return adapter_dedupe_sorted(values, tol)
+
+
+def _parse_float_list(text_value, default_values=None):
+    """Parse comma/space/semicolon separated float list."""
+    if default_values is None:
+        default_values = []
+    if text_value is None:
+        return [float(v) for v in default_values]
+    raw = str(text_value).strip().replace(";", ",").replace(" ", ",")
+    values = []
+    for token in raw.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            values.append(float(token))
+        except Exception:
+            continue
+    if values:
+        return values
+    return [float(v) for v in default_values]
+
+
+def _format_noise_tag(value):
+    """Build compact file-tag fragment for a noise value."""
+    return f"{float(value):.4f}".rstrip("0").rstrip(".").replace(".", "p")
 
 
 def _prepare_xy(x_values, y_values, x_min=None, x_max=None):
@@ -255,418 +260,6 @@ def _simulate_peak_curve(n_peaks, shape, x_min, x_max, n_points, baseline, noise
 
     df = pd.DataFrame({"x": x, "intensity": y})
     return df, component_rows
-
-
-def _format_metric(value, fmt=".5g"):
-    """Format numeric metric safely for display."""
-    try:
-        value = float(value)
-    except Exception:
-        return "n/a"
-    if not np.isfinite(value):
-        return "n/a"
-    return format(value, fmt)
-
-
-def _sanitize_filename(name):
-    """Convert arbitrary label to safe filename fragment."""
-    if not name:
-        return "fit_result"
-    return re.sub(r'[^A-Za-z0-9._-]+', "_", str(name)).strip("._-") or "fit_result"
-
-
-def _run_multipeak_fit(
-    x_data,
-    y_data,
-    *,
-    shape,
-    shape_label,
-    n_peaks,
-    maxiter,
-    peak_guesses=None,
-    x_col_name="x",
-    y_col_name="y",
-):
-    """Run one multi-peak fit and return a UI-ready state dict."""
-    n_peaks = int(n_peaks)
-    if n_peaks < 1:
-        raise ValueError("n_peaks must be >= 1")
-
-    x_fit = np.asarray(x_data, dtype=float)
-    y_fit_data = np.asarray(y_data, dtype=float)
-    if len(x_fit) < 5 or len(y_fit_data) < 5:
-        raise ValueError("Not enough points to fit.")
-    if len(x_fit) != len(y_fit_data):
-        raise ValueError("x/y length mismatch.")
-
-    model = MultiPeakModel(n_peaks=n_peaks, shape=shape)
-    initial_guess = model.get_initial_guess(x_fit, y_fit_data)
-
-    x_span = max(float(np.ptp(x_fit)), 1e-12)
-    y_span = max(float(np.ptp(y_fit_data)), 1e-9)
-    baseline_guess = float(np.percentile(y_fit_data, 10))
-    guess_peaks = _dedupe_sorted(peak_guesses or [], max(x_span / 5000.0, 1e-9))
-
-    for idx in range(1, n_peaks + 1):
-        if idx <= len(guess_peaks):
-            peak_x = float(guess_peaks[idx - 1])
-            data_idx = int(np.argmin(np.abs(x_fit - peak_x)))
-            initial_guess[f"mu{idx}"] = float(x_fit[data_idx])
-            initial_guess[f"A{idx}"] = max(float(y_fit_data[data_idx] - baseline_guess), 0.05 * y_span)
-        initial_guess[f"w{idx}"] = max(
-            float(initial_guess.get(f"w{idx}", x_span / (12 * n_peaks))),
-            x_span / 2000.0,
-        )
-        if shape == "pseudo_voigt":
-            initial_guess[f"eta{idx}"] = float(np.clip(initial_guess.get(f"eta{idx}", 0.5), 0.0, 1.0))
-    initial_guess["c"] = float(initial_guess.get("c", baseline_guess))
-
-    lower_c = float(np.min(y_fit_data) - y_span)
-    upper_c = float(np.max(y_fit_data) + y_span)
-    bounds = {"c": (lower_c, upper_c)}
-    for idx in range(1, n_peaks + 1):
-        bounds[f"A{idx}"] = (0.0, max(3.0 * y_span, 1.0))
-        bounds[f"mu{idx}"] = (float(np.min(x_fit)), float(np.max(x_fit)))
-        bounds[f"w{idx}"] = (x_span / 2000.0, x_span)
-        if shape == "pseudo_voigt":
-            bounds[f"eta{idx}"] = (0.0, 1.0)
-
-    fit_result = Fitter(ArrayData(x_fit, y_fit_data), model).fit(
-        initial_guess=initial_guess,
-        bounds=bounds,
-        maxiter=int(maxiter),
-    )
-
-    fit_params = dict(fit_result.parameters.values)
-    component_curves = []
-    component_rows = []
-    for idx in range(1, n_peaks + 1):
-        amp = float(fit_params.get(f"A{idx}", 0.0))
-        mu = float(fit_params.get(f"mu{idx}", 0.0))
-        width = float(fit_params.get(f"w{idx}", 1.0))
-        eta = float(fit_params.get(f"eta{idx}", 0.5))
-        component = amp * _shape_profile(x_fit, mu, width, shape, eta=eta)
-        component_curves.append(np.asarray(component, dtype=float))
-        row = {
-            "peak": idx,
-            "A": amp,
-            "mu": mu,
-            "w": width,
-        }
-        if shape == "pseudo_voigt":
-            row["eta"] = eta
-        component_rows.append(row)
-
-    return {
-        "backend": "general_peaks",
-        "shape": shape,
-        "shape_label": shape_label,
-        "x_col": x_col_name,
-        "y_col": y_col_name,
-        "x": np.asarray(x_fit, dtype=float),
-        "y": np.asarray(y_fit_data, dtype=float),
-        "y_fit": np.asarray(fit_result.y_fit, dtype=float),
-        "params": fit_params,
-        "metrics": dict(fit_result.metrics),
-        "components": component_curves,
-        "component_table": component_rows,
-        "success": bool(fit_result.success),
-        "message": str(fit_result.message),
-        "n_peaks": n_peaks,
-        "peak_guesses": guess_peaks,
-    }
-
-
-def _fit_state_to_tables(fit_state):
-    """Convert fit state into export-friendly DataFrames."""
-    x_name = fit_state.get("x_col", "x")
-    y_name = fit_state.get("y_col", "y")
-
-    x = np.asarray(fit_state.get("x", []), dtype=float)
-    y_raw = np.asarray(fit_state.get("y", []), dtype=float)
-    y_fit = np.asarray(fit_state.get("y_fit", []), dtype=float)
-    params = dict(fit_state.get("params", {}))
-    baseline = float(params.get("c", params.get("background", 0.0)))
-
-    curve_df = pd.DataFrame({
-        x_name: x,
-        f"{y_name}_raw": y_raw,
-        f"{y_name}_fit_sum": y_fit,
-        "fit_baseline": np.full(len(x), baseline, dtype=float),
-        "fit_residual": y_raw - y_fit if len(x) else np.array([], dtype=float),
-    })
-    for idx, comp in enumerate(fit_state.get("components", []), start=1):
-        curve_df[f"fit_peak_{idx}"] = np.asarray(comp, dtype=float)
-
-    params_df = pd.DataFrame(
-        [{"parameter": k, "value": v} for k, v in sorted(params.items())]
-    )
-    metrics_df = pd.DataFrame(
-        [{"metric": k, "value": v} for k, v in sorted(fit_state.get("metrics", {}).items())]
-    )
-    peaks_df = pd.DataFrame(fit_state.get("component_table", []))
-    metadata = {
-        "backend": fit_state.get("backend", "general_peaks"),
-        "shape": fit_state.get("shape"),
-        "shape_label": fit_state.get("shape_label"),
-        "source_file": fit_state.get("source_file"),
-        "source_curve_key": fit_state.get("source_curve_key"),
-        "curve_label": fit_state.get("curve_label"),
-        "success": fit_state.get("success"),
-        "message": fit_state.get("message"),
-        "n_peaks": fit_state.get("n_peaks"),
-        "peak_guesses": fit_state.get("peak_guesses", []),
-        "saxs_shape": fit_state.get("saxs_shape"),
-        "saxs_shape_label": fit_state.get("saxs_shape_label"),
-        "saxs_polydisperse": fit_state.get("saxs_polydisperse"),
-        "saxs_use_porod": fit_state.get("saxs_use_porod"),
-        "ml_seed_model": fit_state.get("ml_seed_model"),
-        "ml_seed_confidence": fit_state.get("ml_seed_confidence"),
-    }
-    return curve_df, params_df, metrics_df, peaks_df, metadata
-
-
-def _create_fit_plot_figure(fit_state):
-    """Create a standardized fit plot figure for display/export."""
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=fit_state["x"],
-            y=fit_state["y"],
-            mode='lines+markers',
-            name='Data',
-            line=dict(color='#1f77b4', width=1.3),
-            marker=dict(size=4, color='#1f77b4'),
-        )
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=fit_state["x"],
-            y=fit_state["y_fit"],
-            mode='lines',
-            name='Fit',
-            line=dict(color='#2ca02c', width=2.2),
-        )
-    )
-    for idx, component in enumerate(fit_state.get("components", []), start=1):
-        fig.add_trace(
-            go.Scatter(
-                x=fit_state["x"],
-                y=component,
-                mode='lines',
-                name=f'Peak {idx}',
-                line=dict(width=1.2, dash='dot'),
-                opacity=0.8,
-            )
-        )
-    fig.update_layout(
-        title=f"Fit Overlay ({fit_state.get('shape_label', fit_state.get('shape', 'fit'))})",
-        height=460,
-        showlegend=True,
-    )
-    fig.update_xaxes(title=fit_state.get("x_col", "x"))
-    fig.update_yaxes(title=fit_state.get("y_col", "y"))
-    return fig
-
-
-def _try_plot_png_bytes(fig):
-    """Try exporting plotly figure to PNG; return None if unavailable."""
-    try:
-        return fig.to_image(format="png", width=1400, height=900)
-    except Exception:
-        return None
-
-
-def _get_export_root_dir():
-    """Server-side folder for stored fit exports."""
-    root = Path(__file__).resolve().parents[3] / "results" / "fitting_exports"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
-
-
-def _build_fit_zip_bytes(fit_state):
-    """Build one ZIP payload with fitted data, parameters, and metrics."""
-    curve_df, params_df, metrics_df, peaks_df, metadata = _fit_state_to_tables(fit_state)
-    fig = _create_fit_plot_figure(fit_state)
-    npz_data = {
-        "x": np.asarray(fit_state.get("x", []), dtype=float),
-        "y_raw": np.asarray(fit_state.get("y", []), dtype=float),
-        "y_fit_sum": np.asarray(fit_state.get("y_fit", []), dtype=float),
-    }
-    for i, comp in enumerate(fit_state.get("components", []), start=1):
-        npz_data[f"peak_{i}"] = np.asarray(comp, dtype=float)
-    npz_buffer = io.BytesIO()
-    np.savez_compressed(npz_buffer, **npz_data)
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("fitted_curve.csv", curve_df.to_csv(index=False))
-        zf.writestr("fit_parameters.csv", params_df.to_csv(index=False))
-        zf.writestr("fit_metrics.csv", metrics_df.to_csv(index=False))
-        zf.writestr("fit_peaks.csv", peaks_df.to_csv(index=False))
-        zf.writestr("fit_arrays.npz", npz_buffer.getvalue())
-        zf.writestr("fit_summary.json", json.dumps(metadata, indent=2))
-        zf.writestr("fit_plot.html", fig.to_html(full_html=True, include_plotlyjs="cdn"))
-        png_bytes = _try_plot_png_bytes(fig)
-        if png_bytes is not None:
-            zf.writestr("fit_plot.png", png_bytes)
-        else:
-            zf.writestr(
-                "fit_plot_note.txt",
-                "PNG export unavailable (install kaleido). HTML plot is included.",
-            )
-    buffer.seek(0)
-    return buffer.getvalue()
-
-
-def _build_batch_fit_zip_bytes(fit_states_by_curve):
-    """Build ZIP payload for multiple fit states."""
-    buffer = io.BytesIO()
-    summary_rows = []
-    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for idx, (curve_key, fit_state) in enumerate(fit_states_by_curve.items(), start=1):
-            curve_df, params_df, metrics_df, peaks_df, metadata = _fit_state_to_tables(fit_state)
-            fig = _create_fit_plot_figure(fit_state)
-            curve_name = fit_state.get("curve_label") or curve_key
-            prefix = f"{idx:03d}_{_sanitize_filename(curve_name)}"
-
-            zf.writestr(f"{prefix}/fitted_curve.csv", curve_df.to_csv(index=False))
-            zf.writestr(f"{prefix}/fit_parameters.csv", params_df.to_csv(index=False))
-            zf.writestr(f"{prefix}/fit_metrics.csv", metrics_df.to_csv(index=False))
-            zf.writestr(f"{prefix}/fit_peaks.csv", peaks_df.to_csv(index=False))
-            npz_data = {
-                "x": np.asarray(fit_state.get("x", []), dtype=float),
-                "y_raw": np.asarray(fit_state.get("y", []), dtype=float),
-                "y_fit_sum": np.asarray(fit_state.get("y_fit", []), dtype=float),
-            }
-            for i, comp in enumerate(fit_state.get("components", []), start=1):
-                npz_data[f"peak_{i}"] = np.asarray(comp, dtype=float)
-            npz_buffer = io.BytesIO()
-            np.savez_compressed(npz_buffer, **npz_data)
-            zf.writestr(f"{prefix}/fit_arrays.npz", npz_buffer.getvalue())
-            zf.writestr(f"{prefix}/fit_summary.json", json.dumps(metadata, indent=2))
-            zf.writestr(f"{prefix}/fit_plot.html", fig.to_html(full_html=True, include_plotlyjs="cdn"))
-            png_bytes = _try_plot_png_bytes(fig)
-            if png_bytes is not None:
-                zf.writestr(f"{prefix}/fit_plot.png", png_bytes)
-
-            summary_rows.append({
-                "curve_key": curve_key,
-                "curve_label": curve_name,
-                "success": fit_state.get("success"),
-                "message": fit_state.get("message"),
-                "shape": fit_state.get("shape"),
-                "n_peaks": fit_state.get("n_peaks"),
-                "r2": fit_state.get("metrics", {}).get("r2"),
-                "rmse": fit_state.get("metrics", {}).get("rmse"),
-            })
-
-        summary_df = pd.DataFrame(summary_rows)
-        zf.writestr("batch_summary.csv", summary_df.to_csv(index=False))
-
-    buffer.seek(0)
-    return buffer.getvalue()
-
-
-def _save_single_fit_to_server(fit_state):
-    """Persist one fit result to server files and return saved paths."""
-    export_root = _get_export_root_dir()
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    label = _sanitize_filename(fit_state.get("curve_label") or fit_state.get("source_curve_key"))
-    run_dir = export_root / f"{ts}_{label}"
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    curve_df, params_df, metrics_df, peaks_df, metadata = _fit_state_to_tables(fit_state)
-    fig = _create_fit_plot_figure(fit_state)
-
-    curve_df.to_csv(run_dir / "fitted_curve.csv", index=False)
-    params_df.to_csv(run_dir / "fit_parameters.csv", index=False)
-    metrics_df.to_csv(run_dir / "fit_metrics.csv", index=False)
-    peaks_df.to_csv(run_dir / "fit_peaks.csv", index=False)
-    (run_dir / "fit_summary.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-    (run_dir / "fit_plot.html").write_text(fig.to_html(full_html=True, include_plotlyjs="cdn"), encoding="utf-8")
-
-    png_path = run_dir / "fit_plot.png"
-    png_bytes = _try_plot_png_bytes(fig)
-    if png_bytes is not None:
-        png_path.write_bytes(png_bytes)
-    else:
-        png_path = None
-
-    npz_data = {
-        "x": np.asarray(fit_state.get("x", []), dtype=float),
-        "y_raw": np.asarray(fit_state.get("y", []), dtype=float),
-        "y_fit_sum": np.asarray(fit_state.get("y_fit", []), dtype=float),
-    }
-    for i, comp in enumerate(fit_state.get("components", []), start=1):
-        npz_data[f"peak_{i}"] = np.asarray(comp, dtype=float)
-    npz_path = run_dir / "fit_arrays.npz"
-    np.savez_compressed(npz_path, **npz_data)
-
-    zip_path = run_dir / "fit_results.zip"
-    zip_path.write_bytes(_build_fit_zip_bytes(fit_state))
-
-    return {
-        "run_dir": run_dir,
-        "zip_path": zip_path,
-        "npz_path": npz_path,
-        "png_path": png_path,
-    }
-
-
-def _save_batch_fit_to_server(fit_states_by_curve, summary_rows):
-    """Persist batch fit results to server files and return saved paths."""
-    export_root = _get_export_root_dir()
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = export_root / f"{ts}_batch_{len(fit_states_by_curve)}curves"
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    per_curve_dirs = []
-    for idx, (curve_key, fit_state) in enumerate(fit_states_by_curve.items(), start=1):
-        curve_df, params_df, metrics_df, peaks_df, metadata = _fit_state_to_tables(fit_state)
-        fig = _create_fit_plot_figure(fit_state)
-        curve_name = fit_state.get("curve_label") or curve_key
-        curve_dir = run_dir / f"{idx:03d}_{_sanitize_filename(curve_name)}"
-        curve_dir.mkdir(parents=True, exist_ok=True)
-
-        curve_df.to_csv(curve_dir / "fitted_curve.csv", index=False)
-        params_df.to_csv(curve_dir / "fit_parameters.csv", index=False)
-        metrics_df.to_csv(curve_dir / "fit_metrics.csv", index=False)
-        peaks_df.to_csv(curve_dir / "fit_peaks.csv", index=False)
-        (curve_dir / "fit_summary.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-        (curve_dir / "fit_plot.html").write_text(fig.to_html(full_html=True, include_plotlyjs="cdn"), encoding="utf-8")
-
-        png_bytes = _try_plot_png_bytes(fig)
-        if png_bytes is not None:
-            (curve_dir / "fit_plot.png").write_bytes(png_bytes)
-        else:
-            (curve_dir / "fit_plot_note.txt").write_text(
-                "PNG export unavailable (install kaleido). HTML plot is included.",
-                encoding="utf-8",
-            )
-
-        npz_data = {
-            "x": np.asarray(fit_state.get("x", []), dtype=float),
-            "y_raw": np.asarray(fit_state.get("y", []), dtype=float),
-            "y_fit_sum": np.asarray(fit_state.get("y_fit", []), dtype=float),
-        }
-        for i, comp in enumerate(fit_state.get("components", []), start=1):
-            npz_data[f"peak_{i}"] = np.asarray(comp, dtype=float)
-        np.savez_compressed(curve_dir / "fit_arrays.npz", **npz_data)
-        per_curve_dirs.append(curve_dir)
-
-    summary_df = pd.DataFrame(summary_rows)
-    summary_path = run_dir / "batch_summary.csv"
-    summary_df.to_csv(summary_path, index=False)
-
-    zip_path = run_dir / "batch_fit_results.zip"
-    zip_path.write_bytes(_build_batch_fit_zip_bytes(fit_states_by_curve))
-
-    return {
-        "run_dir": run_dir,
-        "zip_path": zip_path,
-        "summary_path": summary_path,
-        "curve_dirs": per_curve_dirs,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -855,6 +448,216 @@ with st.sidebar:
                 }
                 st.success(f"Generated {sim_name} with {int(sim_n_peaks)} {sim_shape_label} peak(s).")
                 st.rerun()
+
+    with st.expander("🧪 Simulate SAXS Curves", expanded=False):
+        st.caption("Generate SAXS form-factor curves with shape, noise, and background variants.")
+        if not PYSAXS_AVAILABLE:
+            st.warning(
+                "SAXS simulator unavailable because pySAXSFitting could not be imported. "
+                f"Error: {PYSAXS_IMPORT_ERROR or 'unknown'}"
+            )
+        else:
+            sim_saxs_label_to_key, _ = get_saxs_shape_options()
+            if not sim_saxs_label_to_key:
+                sim_saxs_label_to_key = dict(SAXS_MODEL_LABEL_TO_KEY)
+            sim_saxs_shape_labels = list(sim_saxs_label_to_key.keys())
+            sim_saxs_default_labels = sim_saxs_shape_labels[: min(3, len(sim_saxs_shape_labels))]
+
+            ss_col1, ss_col2, ss_col3 = st.columns(3)
+            with ss_col1:
+                sim_saxs_shapes = st.multiselect(
+                    "SAXS shapes",
+                    sim_saxs_shape_labels,
+                    default=sim_saxs_default_labels,
+                    key="sim_saxs_shapes",
+                )
+                sim_saxs_q_min = st.number_input(
+                    "q min",
+                    value=0.01,
+                    min_value=0.0,
+                    format="%.5f",
+                    key="sim_saxs_q_min",
+                )
+                sim_saxs_q_max = st.number_input(
+                    "q max",
+                    value=0.30,
+                    min_value=0.0,
+                    format="%.5f",
+                    key="sim_saxs_q_max",
+                )
+                sim_saxs_points = st.number_input(
+                    "Data points",
+                    min_value=100,
+                    max_value=5000,
+                    value=1200,
+                    step=100,
+                    key="sim_saxs_points",
+                )
+                sim_saxs_seed = st.number_input(
+                    "Base seed",
+                    min_value=0,
+                    value=4242,
+                    step=1,
+                    key="sim_saxs_seed",
+                )
+            with ss_col2:
+                sim_saxs_radius = st.number_input(
+                    "Radius (A)",
+                    min_value=1.0,
+                    value=55.0,
+                    format="%.3f",
+                    key="sim_saxs_radius",
+                )
+                sim_saxs_scale = st.number_input(
+                    "Scale",
+                    min_value=0.001,
+                    value=2.0,
+                    format="%.5f",
+                    key="sim_saxs_scale",
+                )
+                sim_saxs_polydisperse = st.checkbox(
+                    "Polydisperse",
+                    value=False,
+                    key="sim_saxs_polydisperse",
+                )
+                sim_saxs_sigma_rel = st.slider(
+                    "sigma_rel",
+                    0.01,
+                    0.40,
+                    0.10,
+                    0.01,
+                    key="sim_saxs_sigma_rel",
+                )
+                sim_saxs_use_porod = st.checkbox(
+                    "Include Porod term",
+                    value=False,
+                    key="sim_saxs_use_porod",
+                )
+            with ss_col3:
+                sim_saxs_bg_modes = st.multiselect(
+                    "Background modes",
+                    ["constant", "decay"],
+                    default=["constant", "decay"],
+                    key="sim_saxs_bg_modes",
+                )
+                sim_saxs_bg_const = st.number_input(
+                    "Background constant",
+                    value=0.02,
+                    min_value=0.0,
+                    format="%.6f",
+                    key="sim_saxs_bg_const",
+                )
+                sim_saxs_bg_amp = st.number_input(
+                    "Decay amplitude",
+                    value=0.08,
+                    min_value=0.0,
+                    format="%.6f",
+                    key="sim_saxs_bg_amp",
+                )
+                sim_saxs_bg_q0 = st.number_input(
+                    "Decay q0",
+                    value=0.035,
+                    min_value=1e-6,
+                    format="%.6f",
+                    key="sim_saxs_bg_q0",
+                )
+                sim_saxs_bg_exp = st.number_input(
+                    "Decay exponent",
+                    value=3.5,
+                    min_value=0.1,
+                    format="%.3f",
+                    key="sim_saxs_bg_exp",
+                )
+
+            sim_saxs_noise_text = st.text_input(
+                "Noise levels (comma-separated)",
+                value="0.00, 0.02, 0.05",
+                key="sim_saxs_noise_levels",
+                help="Example: 0.0, 0.01, 0.03, 0.06",
+            )
+            sim_saxs_include_components = st.checkbox(
+                "Include clean/background component columns",
+                value=True,
+                key="sim_saxs_include_components",
+                help="Adds intensity_clean/intensity_shape/intensity_background columns.",
+            )
+
+            if st.button("➕ Generate SAXS Simulation Curves", key="generate_sim_saxs_curves"):
+                if sim_saxs_q_max <= sim_saxs_q_min:
+                    st.error("q max must be larger than q min.")
+                elif not sim_saxs_shapes:
+                    st.error("Select at least one SAXS shape.")
+                elif not sim_saxs_bg_modes:
+                    st.error("Select at least one background mode.")
+                else:
+                    sim_saxs_noises = [
+                        max(0.0, float(v))
+                        for v in _parse_float_list(sim_saxs_noise_text, default_values=[0.0, 0.02, 0.05])
+                    ]
+                    generated_names = []
+                    error_msgs = []
+                    run_idx = 0
+                    for shape_label in sim_saxs_shapes:
+                        shape_key = sim_saxs_label_to_key.get(shape_label, str(shape_label).lower())
+                        for bg_mode in sim_saxs_bg_modes:
+                            for noise_level in sim_saxs_noises:
+                                run_idx += 1
+                                try:
+                                    sim_df, sim_meta = simulate_saxs_curve(
+                                        shape=shape_key,
+                                        q_min=float(sim_saxs_q_min),
+                                        q_max=float(sim_saxs_q_max),
+                                        n_points=int(sim_saxs_points),
+                                        radius=float(sim_saxs_radius),
+                                        scale=float(sim_saxs_scale),
+                                        polydisperse=bool(sim_saxs_polydisperse),
+                                        sigma_rel=float(sim_saxs_sigma_rel),
+                                        use_porod=bool(sim_saxs_use_porod),
+                                        background_mode=str(bg_mode),
+                                        background_const=float(sim_saxs_bg_const),
+                                        background_decay_amp=float(sim_saxs_bg_amp),
+                                        background_decay_q0=float(sim_saxs_bg_q0),
+                                        background_decay_exp=float(sim_saxs_bg_exp),
+                                        noise_level=float(noise_level),
+                                        seed=int(sim_saxs_seed) + run_idx - 1,
+                                        include_components=bool(sim_saxs_include_components),
+                                    )
+                                except Exception as sim_error:
+                                    error_msgs.append(
+                                        f"{shape_label}/{bg_mode}/noise={noise_level:.4g}: {sim_error}"
+                                    )
+                                    continue
+
+                                st.session_state['sim_curve_counter'] += 1
+                                noise_tag = _format_noise_tag(noise_level)
+                                sim_name = (
+                                    f"sim_saxs_{shape_key}_{bg_mode}_n{noise_tag}_"
+                                    f"{st.session_state['sim_curve_counter']:03d}.csv"
+                                )
+                                st.session_state['dataframes_csv'][sim_name] = sim_df
+                                st.session_state['file_paths_csv'][sim_name] = f"[simulated] {sim_name}"
+                                sim_meta = dict(sim_meta)
+                                sim_meta["noise_level"] = float(noise_level)
+                                sim_meta["background_mode"] = str(bg_mode)
+                                sim_meta["source"] = "saxs_simulator"
+                                st.session_state['simulated_curve_meta'][sim_name] = sim_meta
+                                generated_names.append(sim_name)
+
+                    if generated_names:
+                        st.success(f"Generated {len(generated_names)} SAXS simulated curve(s).")
+                        st.caption(
+                            "Created: "
+                            + ", ".join(generated_names[:4])
+                            + (" ..." if len(generated_names) > 4 else "")
+                        )
+                    if error_msgs:
+                        st.warning(
+                            "Some simulations failed:\n- "
+                            + "\n- ".join(error_msgs[:4])
+                            + ("\n- ..." if len(error_msgs) > 4 else "")
+                        )
+                    if generated_names:
+                        st.rerun()
 
     # Get dataframes from session state
     dataframes = st.session_state['dataframes_csv']
@@ -1712,7 +1515,7 @@ else:
                         "curve_label": fit_selected_label,
                     }
                     try:
-                        fit_state = _run_multipeak_fit(
+                        fit_state = run_general_peak_fit(
                             x_fit,
                             y_fit_data,
                             shape=fit_shape,
@@ -1747,15 +1550,15 @@ else:
                 else:
                     st.warning(f"Status: failed ({single_fit_state.get('message', 'unknown')})")
 
-                fit_plot = _create_fit_plot_figure(single_fit_state)
+                fit_plot = adapter_create_fit_plot_figure(single_fit_state)
                 st.plotly_chart(fit_plot, use_container_width=True)
 
                 metrics = single_fit_state.get("metrics", {})
                 m1, m2, m3, m4 = st.columns(4)
-                m1.metric("R²", _format_metric(metrics.get("r2")))
-                m2.metric("RMSE", _format_metric(metrics.get("rmse")))
-                m3.metric("MAE", _format_metric(metrics.get("mae")))
-                m4.metric("Chi²(red)", _format_metric(metrics.get("chi2_reduced")))
+                m1.metric("R²", adapter_format_metric(metrics.get("r2")))
+                m2.metric("RMSE", adapter_format_metric(metrics.get("rmse")))
+                m3.metric("MAE", adapter_format_metric(metrics.get("mae")))
+                m4.metric("Chi²(red)", adapter_format_metric(metrics.get("chi2_reduced")))
 
                 param_rows = [{"parameter": k, "value": v} for k, v in sorted(single_fit_state.get("params", {}).items())]
                 if param_rows:
@@ -1772,8 +1575,8 @@ else:
                     st.markdown("**Fit Metrics (all)**")
                     st.dataframe(pd.DataFrame(metric_rows), use_container_width=True, hide_index=True)
 
-                single_zip = _build_fit_zip_bytes(single_fit_state)
-                single_export_name = _sanitize_filename(single_fit_state.get("curve_label") or fit_curve_key)
+                single_zip = adapter_build_fit_zip_bytes(single_fit_state)
+                single_export_name = adapter_sanitize_filename(single_fit_state.get("curve_label") or fit_curve_key)
                 export_col1, export_col2 = st.columns(2)
                 with export_col1:
                     st.download_button(
@@ -1786,7 +1589,7 @@ else:
                     )
                 with export_col2:
                     if st.button("💾 Save This Fit to Server", key=_safe_widget_key("fit_save_server", fit_curve_key)):
-                        saved = _save_single_fit_to_server(single_fit_state)
+                        saved = adapter_save_single_fit_to_server(single_fit_state)
                         st.success(f"Saved fit files to `{saved['run_dir']}`")
             else:
                 st.info("Run a single fit to view/export results.")
@@ -1961,7 +1764,7 @@ else:
                         run_shape_label = single_setup_shape_label or batch_shape_label
 
                     try:
-                        fit_state = _run_multipeak_fit(
+                        fit_state = run_general_peak_fit(
                             x_batch,
                             y_batch,
                             shape=run_shape,
@@ -2016,7 +1819,7 @@ else:
                             successful_states[ck] = state
 
                 if successful_states:
-                    batch_zip = _build_batch_fit_zip_bytes(successful_states)
+                    batch_zip = adapter_build_batch_fit_zip_bytes(successful_states)
                     b_export_col1, b_export_col2 = st.columns(2)
                     with b_export_col1:
                         st.download_button(
@@ -2029,7 +1832,7 @@ else:
                         )
                     with b_export_col2:
                         if st.button("💾 Save Batch to Server", key="fit_batch_save_server"):
-                            saved = _save_batch_fit_to_server(successful_states, batch_summary)
+                            saved = adapter_save_batch_fit_to_server(successful_states, batch_summary)
                             st.success(f"Saved batch files to `{saved['run_dir']}`")
     elif fit_backend == FIT_BACKENDS["SAXS Physics"]:
         if not PYSAXS_AVAILABLE:
@@ -2056,19 +1859,19 @@ else:
             with st.expander("🎯 Single-Curve Fitting (SAXS)", expanded=True):
                 last_saxs_setup = st.session_state.get("fit_last_single_setup_saxs", {})
                 default_shape_key = str(last_saxs_setup.get("shape", "sphere"))
-                default_shape_label = SAXS_MODEL_KEY_TO_LABEL.get(default_shape_key, "Sphere")
-                if default_shape_label not in SAXS_MODEL_LABEL_TO_KEY:
-                    default_shape_label = "Sphere"
+                default_shape_label = saxs_key_to_label.get(default_shape_key)
+                if default_shape_label is None:
+                    default_shape_label = next(iter(saxs_label_to_key.keys()))
 
                 scol1, scol2, scol3 = st.columns(3)
                 with scol1:
                     saxs_shape_label = st.selectbox(
                         "SAXS model",
-                        list(SAXS_MODEL_LABEL_TO_KEY.keys()),
-                        index=list(SAXS_MODEL_LABEL_TO_KEY.keys()).index(default_shape_label),
+                        list(saxs_label_to_key.keys()),
+                        index=list(saxs_label_to_key.keys()).index(default_shape_label),
                         key=_safe_widget_key("saxs_shape", fit_curve_key),
                     )
-                    saxs_shape = SAXS_MODEL_LABEL_TO_KEY[saxs_shape_label]
+                    saxs_shape = saxs_label_to_key[saxs_shape_label]
                     shape_detail = get_saxs_model_detail(saxs_shape)
                     if shape_detail:
                         st.caption(
@@ -2261,7 +2064,7 @@ else:
                     else:
                         st.warning(f"Status: failed ({single_fit_state.get('message', 'unknown')})")
 
-                    fit_plot = _create_fit_plot_figure(single_fit_state)
+                    fit_plot = adapter_create_fit_plot_figure(single_fit_state)
                     st.plotly_chart(fit_plot, use_container_width=True)
 
                     smeta = {
@@ -2277,10 +2080,10 @@ else:
 
                     metrics = single_fit_state.get("metrics", {})
                     m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("R²", _format_metric(metrics.get("r2")))
-                    m2.metric("RMSE", _format_metric(metrics.get("rmse")))
-                    m3.metric("MAE", _format_metric(metrics.get("mae")))
-                    m4.metric("Chi²(red)", _format_metric(metrics.get("chi2_reduced")))
+                    m1.metric("R²", adapter_format_metric(metrics.get("r2")))
+                    m2.metric("RMSE", adapter_format_metric(metrics.get("rmse")))
+                    m3.metric("MAE", adapter_format_metric(metrics.get("mae")))
+                    m4.metric("Chi²(red)", adapter_format_metric(metrics.get("chi2_reduced")))
 
                     param_rows = [{"parameter": k, "value": v} for k, v in sorted(single_fit_state.get("params", {}).items())]
                     if param_rows:
@@ -2297,8 +2100,8 @@ else:
                         st.markdown("**Fit Metrics (all)**")
                         st.dataframe(pd.DataFrame(metric_rows), use_container_width=True, hide_index=True)
 
-                    single_zip = _build_fit_zip_bytes(single_fit_state)
-                    single_export_name = _sanitize_filename(single_fit_state.get("curve_label") or fit_curve_key)
+                    single_zip = adapter_build_fit_zip_bytes(single_fit_state)
+                    single_export_name = adapter_sanitize_filename(single_fit_state.get("curve_label") or fit_curve_key)
                     export_col1, export_col2 = st.columns(2)
                     with export_col1:
                         st.download_button(
@@ -2311,7 +2114,7 @@ else:
                         )
                     with export_col2:
                         if st.button("💾 Save This Fit to Server", key=_safe_widget_key("saxs_fit_save_server", fit_curve_key)):
-                            saved = _save_single_fit_to_server(single_fit_state)
+                            saved = adapter_save_single_fit_to_server(single_fit_state)
                             st.success(f"Saved fit files to `{saved['run_dir']}`")
                 else:
                     st.info("Run a SAXS fit to view/export results.")
@@ -2331,19 +2134,19 @@ else:
 
                 last_saxs_setup = st.session_state.get("fit_last_single_setup_saxs", {})
                 default_shape_key = str(last_saxs_setup.get("shape", "sphere"))
-                default_shape_label = SAXS_MODEL_KEY_TO_LABEL.get(default_shape_key, "Sphere")
-                if default_shape_label not in SAXS_MODEL_LABEL_TO_KEY:
-                    default_shape_label = "Sphere"
+                default_shape_label = saxs_key_to_label.get(default_shape_key)
+                if default_shape_label is None:
+                    default_shape_label = next(iter(saxs_label_to_key.keys()))
 
                 bcol1, bcol2, bcol3 = st.columns(3)
                 with bcol1:
                     batch_shape_label = st.selectbox(
                         "Batch SAXS model",
-                        list(SAXS_MODEL_LABEL_TO_KEY.keys()),
-                        index=list(SAXS_MODEL_LABEL_TO_KEY.keys()).index(default_shape_label),
+                        list(saxs_label_to_key.keys()),
+                        index=list(saxs_label_to_key.keys()).index(default_shape_label),
                         key="saxs_fit_batch_shape",
                     )
-                    batch_shape = SAXS_MODEL_LABEL_TO_KEY[batch_shape_label]
+                    batch_shape = saxs_label_to_key[batch_shape_label]
                 with bcol2:
                     batch_poly = st.checkbox(
                         "Batch polydisperse",
@@ -2504,7 +2307,7 @@ else:
                                 successful_states[ck] = state
 
                     if successful_states:
-                        batch_zip = _build_batch_fit_zip_bytes(successful_states)
+                        batch_zip = adapter_build_batch_fit_zip_bytes(successful_states)
                         b_export_col1, b_export_col2 = st.columns(2)
                         with b_export_col1:
                             st.download_button(
@@ -2517,7 +2320,7 @@ else:
                             )
                         with b_export_col2:
                             if st.button("💾 Save Batch to Server", key="saxs_fit_batch_save_server"):
-                                saved = _save_batch_fit_to_server(successful_states, batch_summary)
+                                saved = adapter_save_batch_fit_to_server(successful_states, batch_summary)
                                 st.success(f"Saved batch files to `{saved['run_dir']}`")
     elif fit_backend == FIT_BACKENDS["ML-Assisted (Preview)"]:
         ml_models = list_ml_models()
@@ -2537,7 +2340,7 @@ else:
                     if not PYSAXS_AVAILABLE:
                         raise RuntimeError("SAXS backend unavailable for ML refinement.")
                     saxs_shape = str(pred.get("saxs_shape", "sphere"))
-                    saxs_shape_label = SAXS_MODEL_KEY_TO_LABEL.get(saxs_shape, saxs_shape.title())
+                    saxs_shape_label = saxs_key_to_label.get(saxs_shape, saxs_shape.title())
                     fit_state = run_saxs_fit(
                         x_ref,
                         y_ref,
@@ -2568,7 +2371,7 @@ else:
                     shape_label = str(pred.get("peak_shape_label", "Pseudo-Voigt"))
                     if shape_label not in FIT_SHAPES:
                         shape_label = "Pseudo-Voigt"
-                    fit_state = _run_multipeak_fit(
+                    fit_state = run_general_peak_fit(
                         x_ref,
                         y_ref,
                         shape=FIT_SHAPES[shape_label],
@@ -2741,7 +2544,7 @@ else:
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Model", model_name)
                     c2.metric("Recommended Backend", backend_name)
-                    c3.metric("Confidence", _format_metric(confidence, ".3f"))
+                    c3.metric("Confidence", adapter_format_metric(confidence, ".3f"))
                     st.caption(pred.get("notes", ""))
 
                     if backend_name == FIT_BACKENDS["General Peaks"]:
@@ -2758,11 +2561,17 @@ else:
                                 hide_index=True,
                             )
                     elif backend_name == FIT_BACKENDS["SAXS Physics"]:
+                        pred_shape_key = str(pred.get("saxs_shape", "sphere"))
+                        pred_shape_label = saxs_key_to_label.get(pred_shape_key, pred_shape_key)
                         st.caption(
-                            f"Predicted SAXS shape: {SAXS_MODEL_KEY_TO_LABEL.get(pred.get('saxs_shape', 'sphere'), pred.get('saxs_shape', 'sphere'))} | "
+                            f"Predicted SAXS shape: {pred_shape_label} | "
                             f"polydisperse: {bool(pred.get('saxs_polydisperse', False))} | "
                             f"Porod: {bool(pred.get('saxs_use_porod', False))}"
                         )
+                        candidates = pred.get("candidates", [])
+                        if candidates:
+                            st.markdown("**Candidate Shapes**")
+                            st.dataframe(pd.DataFrame(candidates), use_container_width=True, hide_index=True)
                         init_over = pred.get("initial_overrides", {})
                         if init_over:
                             st.dataframe(

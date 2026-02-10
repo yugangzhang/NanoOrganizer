@@ -80,6 +80,7 @@ From the sidebar in `nanoorganizer`:
 The CSV Plotter (`NanoOrganizer/web_app/pages/1_📊_CSV_Plotter.py`) now supports:
 
 - Synthetic 1D curve generation (one/two/multi-peak)
+- Synthetic SAXS curve generation (multiple shapes, noise variants, constant/decay background)
 - Peak picking by point selection + manual add/remove
 - Single-fit and batch-fit workflows (collapsible sections)
 - Fitting backends:
@@ -100,12 +101,19 @@ Export bundles include:
 - `fit_plot.html`
 - `fit_plot.png` (if `kaleido` available)
 
+PNG export is best-effort. Optional environment controls:
+- `NANOORGANIZER_DISABLE_PNG_EXPORT=1` to skip PNG generation.
+- `NANOORGANIZER_PNG_EXPORT_TIMEOUT_SEC` to cap PNG export wait time.
+
 ## Optional External Integration
 
 For fitting backends:
 
 - `pyFitting` is required for optimization-based fitting
-- `pySAXSFitting` is used for SAXS model fitting and dip-analysis seeds
+- `pySAXSFitting` high-level fitting interface is used for:
+  - SAXS model fitting + dip-analysis seeds
+  - shared multi-peak fit API (`fit_multipeak_curve`) when available
+- `NanoOrganizer/web_app/components/fitting_adapters.py` is the UI/backend boundary for all fitting paths
 
 If these packages are not installed, NanoOrganizer attempts fallback imports from sibling repos (common local development setup).
 
