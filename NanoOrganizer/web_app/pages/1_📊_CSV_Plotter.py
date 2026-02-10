@@ -371,6 +371,22 @@ with st.sidebar:
         show_grid = st.checkbox("Show grid", value=True)
         show_legend = st.checkbox("Show legend", value=True)
 
+    # Figure size
+    with st.expander("📐 Figure Size", expanded=False):
+        use_custom_size = st.checkbox("Custom figure size", value=False,
+                                       help="Default: auto width, 600px height")
+        if use_custom_size:
+            sc1, sc2 = st.columns(2)
+            with sc1:
+                fig_width = st.number_input("Width (px)", min_value=300, max_value=3000,
+                                            value=1000, step=50)
+            with sc2:
+                fig_height = st.number_input("Height (px)", min_value=200, max_value=2000,
+                                             value=600, step=50)
+        else:
+            fig_width = None
+            fig_height = 600
+
     # Labels
     with st.expander("📝 Labels", expanded=False):
         plot_title = st.text_input("Plot title", value="Data Comparison")
@@ -400,6 +416,7 @@ for file_name, y_cols in file_y_columns.items():
                     'marker': list(MARKERS_DICT.keys())[curve_idx % len(MARKERS_DICT)],
                     'linestyle': 'Solid',
                     'linewidth': 2.0,
+                    'markersize': 8.0,
                     'alpha': 0.8,
                     'enabled': True
                 }
@@ -424,7 +441,7 @@ for file_name, y_cols in file_y_columns.items():
                 continue
 
             st.divider()
-            col1, col2, col3, col4, col5 = st.columns(5)
+            col1, col2, col3, col4, col5, col6 = st.columns(6)
 
             with col1:
                 color_name = st.selectbox(
@@ -470,6 +487,16 @@ for file_name, y_cols in file_y_columns.items():
                 curve_settings[curve_key]['linewidth'] = linewidth
 
             with col5:
+                markersize = st.slider(
+                    "Marker Size",
+                    1.0, 20.0,
+                    st.session_state['curve_styles'][curve_key].get('markersize', 8.0),
+                    1.0,
+                    key=f"markersize_{curve_key}"
+                )
+                curve_settings[curve_key]['markersize'] = markersize
+
+            with col6:
                 alpha = st.slider(
                     "Opacity",
                     0.1, 1.0,
@@ -485,6 +512,7 @@ for file_name, y_cols in file_y_columns.items():
                 'marker': marker_name,
                 'linestyle': linestyle_name,
                 'linewidth': linewidth,
+                'markersize': markersize,
                 'alpha': alpha
             })
 
@@ -581,7 +609,7 @@ if use_plotly:
                 ),
                 marker=dict(
                     symbol=marker_style if marker_style else 'circle',
-                    size=8,
+                    size=style.get('markersize', 8.0),
                     color=style.get('color', '#1f77b4')
                 ),
                 opacity=style.get('alpha', 0.8),
@@ -615,16 +643,19 @@ if use_plotly:
         gridwidth=0.5
     )
 
-    fig.update_layout(
+    layout_kwargs = dict(
         title=plot_title,
-        height=600,
+        height=fig_height,
         hovermode='closest',
         showlegend=show_legend,
         legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02)
     )
+    if fig_width is not None:
+        layout_kwargs['width'] = fig_width
+    fig.update_layout(**layout_kwargs)
 
     # Show plot
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=(fig_width is None))
     if skipped_count > 0:
         st.success(f"✅ {plotted_count} curve(s) plotted. **Hover over curves to see (x,y) values!** ({skipped_count} disabled)")
     else:
@@ -634,7 +665,10 @@ else:
     # -------------------------------------------------------------------------
     # Matplotlib Static Plot
     # -------------------------------------------------------------------------
-    fig, ax = plt.subplots(figsize=(12, 7))
+    if fig_width is not None:
+        fig, ax = plt.subplots(figsize=(fig_width / 100, fig_height / 100))
+    else:
+        fig, ax = plt.subplots(figsize=(12, fig_height / 100))
 
     plotted_count = 0
     skipped_count = 0
@@ -687,7 +721,7 @@ else:
                 linewidth=style.get('linewidth', 2.0),
                 alpha=style.get('alpha', 0.8),
                 label=trace_label,
-                markersize=6,
+                markersize=style.get('markersize', 8.0),
                 markevery=max(1, len(x_data)//20) if marker else None
             )
 

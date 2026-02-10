@@ -338,6 +338,24 @@ with st.sidebar:
 
     total_subplots = n_rows * n_cols
 
+    # Figure size
+    with st.expander("📐 Figure Size", expanded=False):
+        use_custom_size = st.checkbox("Custom figure size", value=False,
+                                       key="univ_custom_size",
+                                       help="Default: auto width, height scales with rows")
+        if use_custom_size:
+            sc1, sc2 = st.columns(2)
+            with sc1:
+                fig_width = st.number_input("Width (px)", min_value=300, max_value=3000,
+                                            value=1000, step=50, key="univ_fig_width")
+            with sc2:
+                fig_height = st.number_input("Height (px)", min_value=200, max_value=2000,
+                                             value=max(500, 450 * n_rows), step=50,
+                                             key="univ_fig_height")
+        else:
+            fig_width = None
+            fig_height = max(500, 450 * n_rows)
+
     st.divider()
     st.header("📁 Data Loading")
 
@@ -624,6 +642,7 @@ for subplot_idx, tab in enumerate(subplot_tabs):
                                     'marker': 'None',
                                     'linestyle': 'Solid',
                                     'linewidth': 2.0,
+                                    'markersize': 7.0,
                                     'opacity': 0.9,
                                     'enabled': True,
                                 }
@@ -631,7 +650,7 @@ for subplot_idx, tab in enumerate(subplot_tabs):
                             defaults = st.session_state['univ_curve_styles'][style_key]
 
                             st.markdown(f"**{data_name} → {yc}**")
-                            sc1, sc2, sc3, sc4, sc5, sc6 = st.columns(6)
+                            sc1, sc2, sc3, sc4, sc5, sc6, sc7 = st.columns(7)
 
                             with sc1:
                                 s_enabled = st.checkbox("Show", value=defaults['enabled'],
@@ -652,12 +671,17 @@ for subplot_idx, tab in enumerate(subplot_tabs):
                                 s_width = st.slider("Width", 0.5, 5.0, defaults['linewidth'], 0.5,
                                                     key=f"univ_lw_{style_key}")
                             with sc6:
+                                s_msize = st.slider("Marker Size", 1.0, 20.0,
+                                                    defaults.get('markersize', 7.0), 1.0,
+                                                    key=f"univ_ms_{style_key}")
+                            with sc7:
                                 s_alpha = st.slider("Opacity", 0.1, 1.0, defaults['opacity'], 0.1,
                                                     key=f"univ_op_{style_key}")
 
                             st.session_state['univ_curve_styles'][style_key] = {
                                 'color': s_color, 'marker': s_marker,
                                 'linestyle': s_line, 'linewidth': s_width,
+                                'markersize': s_msize,
                                 'opacity': s_alpha, 'enabled': s_enabled,
                             }
 
@@ -667,6 +691,7 @@ for subplot_idx, tab in enumerate(subplot_tabs):
                                 'marker_plotly': MPL_TO_PLOTLY_MARKER.get(MARKERS_DICT[s_marker]),
                                 'dash': MPL_TO_PLOTLY_DASH.get(LINESTYLES_DICT[s_line]),
                                 'linewidth': s_width,
+                                'markersize': s_msize,
                                 'opacity': s_alpha,
                             }
 
@@ -1033,6 +1058,8 @@ if any_enabled:
                     else:
                         trace_name = yc
 
+                    msize = style.get('markersize', 7.0)
+
                     fig.add_trace(
                         go.Scatter(
                             x=x_data, y=y_data,
@@ -1040,7 +1067,7 @@ if any_enabled:
                             name=trace_name,
                             line=dict(color=color, width=lw, dash=dash if dash else 'solid'),
                             marker=dict(symbol=marker_sym if marker_sym else 'circle',
-                                        size=7, color=color),
+                                        size=msize, color=color),
                             opacity=alpha,
                             showlegend=show_legend,
                             legend=legend_name,
@@ -1367,14 +1394,17 @@ if any_enabled:
         layout_kwargs[leg_name] = legend_cfg
 
     # Global layout
-    fig.update_layout(
-        height=max(500, 450 * n_rows),
+    global_layout = dict(
+        height=fig_height,
         hovermode='closest',
         title_text="Universal Plotter",
         **layout_kwargs,
     )
+    if fig_width is not None:
+        global_layout['width'] = fig_width
+    fig.update_layout(**global_layout)
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=(fig_width is None))
     st.session_state['univ_generated_fig'] = fig
     st.caption("**Hover** for values, **scroll** to zoom, **drag** to pan, **click-drag** to rotate 3D.")
 

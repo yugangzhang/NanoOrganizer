@@ -3,7 +3,7 @@
 
 Commands
 --------
-nanoorganizer       Full access mode (port 8501)
+nanoorganizer       Full access mode (port 5647)
 nanoorganizer_user  Restricted user mode — locks folder browser to CWD
 """
 
@@ -19,7 +19,7 @@ def main():
     sys.exit(subprocess.call([
         sys.executable, "-m", "streamlit", "run", str(app_path),
         "--server.headless", "true",
-        "--server.port", "8501"
+        "--server.port", "5647"
     ]))
 
 
@@ -37,7 +37,7 @@ def main_user():
         [
             sys.executable, "-m", "streamlit", "run", str(app_path),
             "--server.headless", "true",
-            "--server.port", "8501",
+            "--server.port", "5647",
         ],
         env=env,
     ))
