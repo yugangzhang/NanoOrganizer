@@ -1052,10 +1052,9 @@ def create_fit_plot_figure(fit_state):
         go.Scatter(
             x=fit_state["x"],
             y=fit_state["y"],
-            mode="lines+markers",
+            mode="markers",
             name="Data",
-            line=dict(color="#1f77b4", width=1.3),
-            marker=dict(size=4, color="#1f77b4"),
+            marker=dict(size=5, color="#111111"),
         )
     )
     fig.add_trace(
@@ -1064,7 +1063,7 @@ def create_fit_plot_figure(fit_state):
             y=fit_state["y_fit"],
             mode="lines",
             name="Fit",
-            line=dict(color="#2ca02c", width=2.2),
+            line=dict(color="#d62728", width=2.2),
         )
     )
     for idx, component in enumerate(fit_state.get("components", []), start=1):
@@ -1074,8 +1073,8 @@ def create_fit_plot_figure(fit_state):
                 y=component,
                 mode="lines",
                 name=f"Peak {idx}",
-                line=dict(width=1.2, dash="dot"),
-                opacity=0.8,
+                line=dict(color="#7f7f7f", width=1.2, dash="dot"),
+                opacity=0.65,
             )
         )
     fig.update_layout(

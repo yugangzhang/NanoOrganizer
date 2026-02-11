@@ -74,22 +74,22 @@ From the sidebar in `nanoorganizer`:
 6. `Data Manager`
 7. `Test Data Generator`
 8. `Universal Plotter`
+9. `1D Fitting Workbench`
 
-## CSV Plotter Fitting Workflows
+## CSV Plotter And Fitting Workbench
 
-The CSV Plotter (`NanoOrganizer/web_app/pages/1_📊_CSV_Plotter.py`) now supports:
+`CSV Plotter` (`NanoOrganizer/web_app/pages/1_📊_CSV_Plotter.py`) is now focused on general 1D visualization:
+- Load many CSV/TXT/DAT/NPZ curves
+- Per-curve styling and overlay plotting
 
-- Synthetic 1D curve generation (one/two/multi-peak)
-- Synthetic SAXS curve generation (multiple shapes, noise variants, constant/decay background)
-- Peak picking by point selection + manual add/remove
-- Single-fit and batch-fit workflows (collapsible sections)
-- Fitting backends:
-  - `General Peaks`
-  - `SAXS Physics`
-  - `ML-Assisted (Preview)` scaffold
-- Export options:
-  - Download ZIP per single or batch fit
-  - Save fit results to server (`results/fitting_exports/...`)
+`1D Fitting Workbench` (`NanoOrganizer/web_app/pages/9_🧪_1D_Fitting_Workbench.py`) is the dedicated fitting page:
+- Load/select curves for fitting without auto-plot clutter
+- Optional preview visualization when needed
+- Independent visualization range and fitting range
+- Axis scale controls (`linear-linear`, `log-x`, `log-y`, `log-log`)
+- Single and batch fitting workflows (`General Peaks`, `SAXS Physics`)
+- Synthetic 1D peak and SAXS simulation tools for test datasets
+- Export/download and server-save for fit results
 
 Export bundles include:
 - `fitted_curve.csv`
