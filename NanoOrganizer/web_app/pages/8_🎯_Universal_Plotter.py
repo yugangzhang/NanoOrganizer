@@ -20,6 +20,9 @@ from pathlib import Path
 from scipy.interpolate import griddata
 import io
 import sys
+import copy
+import pprint
+import re
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -94,6 +97,13 @@ COLORSCALES_3D = [
 
 # 3D plot types (from 3D Plotter)
 PLOT_TYPES_3D = ['Surface', 'Scatter 3D', 'Contour 3D', 'Wireframe', 'Mesh']
+LAYOUT_OPTIONS = [
+    "1×1 (Single)", "1×2 (Horizontal)", "2×1 (Vertical)",
+    "2×2 (Grid)", "1×3", "3×1", "2×3", "Custom",
+]
+PLOT_CATEGORY_OPTIONS = ["1D Plot", "2D Image/Heatmap", "3D Plot"]
+SOURCE_2D_OPTIONS = ["Image array", "Tabular data"]
+DATA_SOURCE_OPTIONS = ["Upload files", "Browse server", "Generate synthetic"]
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -289,6 +299,425 @@ def shorten_path(path_str, max_length=40):
     return ".../" + filename
 
 
+def _to_bool(value, default=False):
+    """Convert arbitrary values to bool with fallback."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
+
+
+def _to_int(value, default, min_value=None, max_value=None):
+    """Convert arbitrary values to int with optional clamp."""
+    fallback = 0 if default is None else default
+    try:
+        parsed = int(value)
+    except Exception:
+        try:
+            parsed = int(fallback)
+        except Exception:
+            parsed = 0
+    if min_value is not None:
+        parsed = max(parsed, min_value)
+    if max_value is not None:
+        parsed = min(parsed, max_value)
+    return parsed
+
+
+def _to_float(value, default, min_value=None, max_value=None):
+    """Convert arbitrary values to float with optional clamp."""
+    fallback = 0.0 if default is None else default
+    try:
+        parsed = float(value)
+    except Exception:
+        try:
+            parsed = float(fallback)
+        except Exception:
+            parsed = 0.0
+    if min_value is not None:
+        parsed = max(parsed, min_value)
+    if max_value is not None:
+        parsed = min(parsed, max_value)
+    return parsed
+
+
+def _is_simple_state_value(value, depth=0):
+    """Return True if value is a JSON-like primitive/list/dict."""
+    if depth > 4:
+        return False
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return True
+    if isinstance(value, (list, tuple)):
+        return all(_is_simple_state_value(v, depth + 1) for v in value)
+    if isinstance(value, dict):
+        return all(
+            isinstance(k, str) and _is_simple_state_value(v, depth + 1)
+            for k, v in value.items()
+        )
+    return False
+
+
+def _sanitize_curve_style_entry(style):
+    """Sanitize one curve-style dict entry."""
+    if not isinstance(style, dict):
+        style = {}
+    color = style.get("color", COLOR_NAMES[0])
+    marker = style.get("marker", "None")
+    line = style.get("linestyle", "Solid")
+    if color not in COLOR_NAMES:
+        color = COLOR_NAMES[0]
+    if marker not in MARKER_NAMES:
+        marker = "None"
+    if line not in LINESTYLE_NAMES:
+        line = "Solid"
+    return {
+        "color": color,
+        "marker": marker,
+        "linestyle": line,
+        "linewidth": _to_float(style.get("linewidth", 2.0), 2.0, 0.5, 5.0),
+        "markersize": _to_float(style.get("markersize", 7.0), 7.0, 1.0, 20.0),
+        "opacity": _to_float(style.get("opacity", 0.9), 0.9, 0.1, 1.0),
+        "enabled": _to_bool(style.get("enabled", True), True),
+    }
+
+
+def _snapshot_univ_widget_state():
+    """Snapshot current `univ_*` widget state into a serializable dict."""
+    excluded = {
+        "univ_generated_fig",
+        "univ_pending_plot_spec",
+        "univ_current_plot_spec",
+        "univ_editor_code",
+        "univ_editor_code_pending",
+        "univ_editor_status",
+        "univ_editor_warnings",
+    }
+    state = {}
+    for key, value in st.session_state.items():
+        if not key.startswith("univ_"):
+            continue
+        if key in excluded:
+            continue
+        if key == "univ_curve_styles":
+            if isinstance(value, dict):
+                state[key] = {
+                    str(sk): _sanitize_curve_style_entry(sv)
+                    for sk, sv in value.items()
+                }
+            continue
+        if _is_simple_state_value(value):
+            state[key] = copy.deepcopy(value)
+    return state
+
+
+def _build_univ_plot_spec(n_rows, n_cols, total_subplots):
+    """Build serializable Universal Plotter config from current UI state."""
+    return {
+        "version": 1,
+        "summary": {
+            "n_rows": int(n_rows),
+            "n_cols": int(n_cols),
+            "total_subplots": int(total_subplots),
+        },
+        "widget_state": _snapshot_univ_widget_state(),
+    }
+
+
+def _generate_univ_editor_python(plot_spec):
+    """Generate editable Python code for Universal Plotter config."""
+    spec_text = pprint.pformat(plot_spec, sort_dicts=False, width=100, compact=False)
+    return (
+        "# NanoOrganizer universal plot editor (experimental)\n"
+        "# Edit plot_spec['widget_state'] keys and click 'Run Edited Python'.\n"
+        "# The app uses `result` (if defined) otherwise `plot_spec`.\n\n"
+        f"plot_spec = {spec_text}\n\n"
+        "# Example tweaks:\n"
+        "# plot_spec['widget_state']['univ_layout_type'] = '2×2 (Grid)'\n"
+        "# plot_spec['widget_state']['univ_title_0'] = 'Updated Subplot 1'\n\n"
+        "result = plot_spec\n"
+    )
+
+
+def _sanitize_univ_widget_value(key, value):
+    """Sanitize one universal-widget value by key pattern."""
+    if key == "univ_layout_type":
+        return value if value in LAYOUT_OPTIONS else LAYOUT_OPTIONS[0]
+    if key == "univ_data_source":
+        return value if value in DATA_SOURCE_OPTIONS else DATA_SOURCE_OPTIONS[0]
+    if key in {"univ_n_rows", "univ_n_cols"}:
+        return _to_int(value, 2, 1, 5)
+    if key == "univ_custom_size":
+        return _to_bool(value, False)
+    if key == "univ_fig_width":
+        return _to_int(value, 1000, 300, 3000)
+    if key == "univ_fig_height":
+        return _to_int(value, 800, 200, 2000)
+
+    if key.startswith("univ_enable_"):
+        return _to_bool(value, False)
+    if key.startswith("univ_cat_"):
+        return value if value in PLOT_CATEGORY_OPTIONS else PLOT_CATEGORY_OPTIONS[0]
+    if key.startswith("univ_nlayers_"):
+        return _to_int(value, 1, 1, 10)
+    if key.startswith("univ_xscale_") or key.startswith("univ_yscale_"):
+        return value if value in ["linear", "log"] else "linear"
+    if key.startswith("univ_grid_") or key.startswith("univ_legend_"):
+        return _to_bool(value, True)
+    if key.startswith("univ_usexlim_") or key.startswith("univ_useylim_"):
+        return _to_bool(value, False)
+    if key.startswith("univ_xmin_") or key.startswith("univ_xmax_") or key.startswith("univ_ymin_") or key.startswith("univ_ymax_"):
+        return _to_float(value, 0.0)
+
+    if key.startswith("univ_2dsrc_"):
+        return value if value in SOURCE_2D_OPTIONS else SOURCE_2D_OPTIONS[0]
+    if key.startswith("univ_cmap_"):
+        return value if value in COLORMAPS_2D else COLORMAPS_2D[0]
+    if key.startswith("univ_log_") or key.startswith("univ_autocon_"):
+        return _to_bool(value, False)
+    if key.startswith("univ_aspect_"):
+        return value if value in ["equal", "auto"] else "equal"
+    if key.startswith("univ_vminp_"):
+        return _to_float(value, 0.0, 0.0, 50.0)
+    if key.startswith("univ_vmaxp_"):
+        return _to_float(value, 100.0, 50.0, 100.0)
+    if key.startswith("univ_frame_"):
+        return _to_int(value, 0, 0, 10**6)
+
+    if key.startswith("univ_use4d_"):
+        return _to_bool(value, False)
+    if key.startswith("univ_3dtype_"):
+        return value if value in PLOT_TYPES_3D else PLOT_TYPES_3D[0]
+    if key.startswith("univ_3dcscale_"):
+        return value if value in COLORSCALES_3D else COLORSCALES_3D[0]
+    if key.startswith("univ_3dopacity_"):
+        return _to_float(value, 0.9, 0.1, 1.0)
+
+    if key.startswith("univ_col_"):
+        return value if value in COLOR_NAMES else COLOR_NAMES[0]
+    if key.startswith("univ_mk_"):
+        return value if value in MARKER_NAMES else "None"
+    if key.startswith("univ_ls_"):
+        return value if value in LINESTYLE_NAMES else "Solid"
+    if key.startswith("univ_lw_"):
+        return _to_float(value, 2.0, 0.5, 5.0)
+    if key.startswith("univ_ms_"):
+        return _to_float(value, 7.0, 1.0, 20.0)
+    if key.startswith("univ_op_"):
+        return _to_float(value, 0.9, 0.1, 1.0)
+    if key.startswith("univ_en_"):
+        return _to_bool(value, True)
+
+    if key.startswith("univ_") and _is_simple_state_value(value):
+        return copy.deepcopy(value)
+    return None
+
+
+def _sanitize_univ_plot_spec(candidate, fallback_spec, loaded_data, loaded_images):
+    """Sanitize edited universal plot spec and return (spec, warnings)."""
+    warnings = []
+    if not isinstance(candidate, dict):
+        warnings.append("Edited code did not return a dict; keeping previous settings.")
+        return copy.deepcopy(fallback_spec), warnings
+
+    raw_state = candidate.get("widget_state")
+    if raw_state is None:
+        if all(str(k).startswith("univ_") for k in candidate.keys()):
+            raw_state = candidate
+        else:
+            raw_state = {}
+    if not isinstance(raw_state, dict):
+        warnings.append("widget_state must be a dict; keeping previous settings.")
+        return copy.deepcopy(fallback_spec), warnings
+
+    normalized_state = copy.deepcopy(fallback_spec.get("widget_state", {}))
+
+    for key, value in raw_state.items():
+        key = str(key)
+        if not key.startswith("univ_"):
+            continue
+
+        if key == "univ_curve_styles":
+            if isinstance(value, dict):
+                style_state = {}
+                for sk, sv in value.items():
+                    style_state[str(sk)] = _sanitize_curve_style_entry(sv)
+                normalized_state[key] = style_state
+            continue
+
+        if not _is_simple_state_value(value):
+            warnings.append(f"Ignored non-serializable value for key '{key}'.")
+            continue
+
+        sanitized_val = _sanitize_univ_widget_value(key, value)
+        if sanitized_val is not None:
+            normalized_state[key] = sanitized_val
+
+    data_names = list(loaded_data.keys())
+    image_names = list(loaded_images.keys())
+
+    # Validate dataset/image selectors
+    for key in list(normalized_state.keys()):
+        if re.match(r"^univ_data_(1d|2d|3d)_\d+(_L\d+)?$", key):
+            val = normalized_state[key]
+            if not data_names:
+                normalized_state[key] = ""
+            elif val not in data_names:
+                normalized_state[key] = data_names[0]
+                warnings.append(f"Adjusted invalid dataset selection for '{key}'.")
+        if re.match(r"^univ_img_\d+$", key):
+            val = normalized_state[key]
+            if not image_names:
+                normalized_state[key] = ""
+            elif val not in image_names:
+                normalized_state[key] = image_names[0]
+                warnings.append(f"Adjusted invalid image selection for '{key}'.")
+
+    # Validate column selectors according to selected datasets
+    for key in list(normalized_state.keys()):
+        m = re.match(r"^univ_xcol_(\d+)_L(\d+)$", key)
+        if m:
+            subplot_idx, layer_idx = m.group(1), m.group(2)
+            dkey = f"univ_data_1d_{subplot_idx}_L{layer_idx}"
+            data_name = normalized_state.get(dkey)
+            if data_name in loaded_data:
+                cols = list(loaded_data[data_name].columns)
+                if cols and normalized_state[key] not in cols:
+                    normalized_state[key] = cols[0]
+                ykey = f"univ_ycols_{subplot_idx}_L{layer_idx}"
+                yvals = normalized_state.get(ykey, [])
+                if isinstance(yvals, str):
+                    yvals = [yvals]
+                if not isinstance(yvals, (list, tuple)):
+                    yvals = []
+                avail_y = [c for c in cols if c != normalized_state[key]]
+                yvals = [str(yc) for yc in yvals if str(yc) in avail_y]
+                if not yvals and avail_y:
+                    yvals = [avail_y[0]]
+                normalized_state[ykey] = yvals
+
+        m2 = re.match(r"^univ_2d[xyz]_(\d+)$", key)
+        if m2:
+            subplot_idx = m2.group(1)
+            dkey = f"univ_data_2d_{subplot_idx}"
+            data_name = normalized_state.get(dkey)
+            if data_name in loaded_data:
+                cols = list(loaded_data[data_name].columns)
+                xkey = f"univ_2dx_{subplot_idx}"
+                ykey = f"univ_2dy_{subplot_idx}"
+                zkey = f"univ_2dz_{subplot_idx}"
+                if cols:
+                    xval = normalized_state.get(xkey, cols[0])
+                    if xval not in cols:
+                        xval = cols[0]
+                    y_opts = [c for c in cols if c != xval] or cols
+                    yval = normalized_state.get(ykey, y_opts[0])
+                    if yval not in y_opts:
+                        yval = y_opts[0]
+                    z_opts = [c for c in cols if c not in [xval, yval]] or cols
+                    zval = normalized_state.get(zkey, z_opts[0])
+                    if zval not in z_opts:
+                        zval = z_opts[0]
+                    normalized_state[xkey] = xval
+                    normalized_state[ykey] = yval
+                    normalized_state[zkey] = zval
+
+        m3 = re.match(r"^univ_3d[xyz]_(\d+)$", key)
+        if m3:
+            subplot_idx = m3.group(1)
+            dkey = f"univ_data_3d_{subplot_idx}"
+            data_name = normalized_state.get(dkey)
+            if data_name in loaded_data:
+                cols = list(loaded_data[data_name].columns)
+                if cols:
+                    xkey = f"univ_3dx_{subplot_idx}"
+                    ykey = f"univ_3dy_{subplot_idx}"
+                    zkey = f"univ_3dz_{subplot_idx}"
+                    ckey = f"univ_colcol_{subplot_idx}"
+                    xval = normalized_state.get(xkey, cols[0])
+                    if xval not in cols:
+                        xval = cols[0]
+                    yval = normalized_state.get(ykey, cols[min(1, len(cols) - 1)])
+                    if yval not in cols:
+                        yval = cols[min(1, len(cols) - 1)]
+                    zval = normalized_state.get(zkey, cols[min(2, len(cols) - 1)])
+                    if zval not in cols:
+                        zval = cols[min(2, len(cols) - 1)]
+                    normalized_state[xkey] = xval
+                    normalized_state[ykey] = yval
+                    normalized_state[zkey] = zval
+                    cval = normalized_state.get(ckey, cols[min(3, len(cols) - 1)])
+                    if cval not in cols:
+                        cval = cols[min(3, len(cols) - 1)]
+                    normalized_state[ckey] = cval
+
+    # Clamp frame sliders according to selected image stacks.
+    for key in list(normalized_state.keys()):
+        m = re.match(r"^univ_frame_(\d+)$", key)
+        if not m:
+            continue
+        subplot_idx = m.group(1)
+        img_name = normalized_state.get(f"univ_img_{subplot_idx}")
+        if img_name in loaded_images and loaded_images[img_name].ndim == 3:
+            max_idx = loaded_images[img_name].shape[0] - 1
+            normalized_state[key] = _to_int(normalized_state[key], 0, 0, max_idx)
+        else:
+            normalized_state[key] = 0
+
+    normalized_state["univ_curve_styles"] = {
+        str(sk): _sanitize_curve_style_entry(sv)
+        for sk, sv in normalized_state.get("univ_curve_styles", {}).items()
+    }
+
+    return {"version": 1, "widget_state": normalized_state}, warnings
+
+
+def _apply_univ_plot_spec_to_state(plot_spec):
+    """Apply sanitized universal plot spec into session state."""
+    widget_state = plot_spec.get("widget_state", {})
+    if not isinstance(widget_state, dict):
+        return
+
+    # Apply scalar widget keys first.
+    for key, value in widget_state.items():
+        if key == "univ_curve_styles":
+            continue
+        if key.startswith("univ_"):
+            st.session_state[key] = copy.deepcopy(value)
+
+    # Curve-style dictionary is used as source of truth for style expanders.
+    if "univ_curve_styles" in widget_state and isinstance(widget_state["univ_curve_styles"], dict):
+        st.session_state["univ_curve_styles"] = {
+            str(sk): _sanitize_curve_style_entry(sv)
+            for sk, sv in widget_state["univ_curve_styles"].items()
+        }
+
+
+def _execute_univ_editor(code_text, base_plot_spec, loaded_data, loaded_images):
+    """Execute editor code and sanitize returned universal plot spec."""
+    execution_locals = {
+        "plot_spec": copy.deepcopy(base_plot_spec),
+        "result": None,
+        "data_files": list(loaded_data.keys()),
+        "image_files": list(loaded_images.keys()),
+        "columns_by_dataset": {k: list(v.columns) for k, v in loaded_data.items()},
+        "copy": copy,
+        "np": np,
+        "pd": pd,
+    }
+    exec(code_text, {"__builtins__": __builtins__}, execution_locals)
+    candidate = execution_locals.get("result")
+    if candidate is None:
+        candidate = execution_locals.get("plot_spec")
+    return _sanitize_univ_plot_spec(candidate, base_plot_spec, loaded_data, loaded_images)
+
+
 # ---------------------------------------------------------------------------
 # Initialize session state
 # ---------------------------------------------------------------------------
@@ -301,6 +730,19 @@ if 'univ_loaded_images' not in st.session_state:
 
 if 'univ_curve_styles' not in st.session_state:
     st.session_state['univ_curve_styles'] = {}
+
+st.session_state.setdefault("univ_layout_type", LAYOUT_OPTIONS[0])
+st.session_state.setdefault("univ_n_rows", 2)
+st.session_state.setdefault("univ_n_cols", 2)
+st.session_state.setdefault("univ_data_source", DATA_SOURCE_OPTIONS[0])
+st.session_state.setdefault("univ_file_pattern", "*.*")
+st.session_state.setdefault("univ_editor_code", "")
+st.session_state.setdefault("univ_editor_status", "")
+st.session_state.setdefault("univ_editor_warnings", [])
+
+if "univ_pending_plot_spec" in st.session_state:
+    _pending_spec = st.session_state.pop("univ_pending_plot_spec")
+    _apply_univ_plot_spec_to_state(_pending_spec)
 
 # ---------------------------------------------------------------------------
 # Main App
@@ -320,14 +762,14 @@ with st.sidebar:
 
     layout_type = st.selectbox(
         "Figure layout",
-        ["1×1 (Single)", "1×2 (Horizontal)", "2×1 (Vertical)",
-         "2×2 (Grid)", "1×3", "3×1", "2×3", "Custom"],
+        LAYOUT_OPTIONS,
+        key="univ_layout_type",
         help="Choose subplot grid arrangement",
     )
 
     if layout_type == "Custom":
-        n_rows = st.number_input("Rows", min_value=1, max_value=5, value=2)
-        n_cols = st.number_input("Columns", min_value=1, max_value=5, value=2)
+        n_rows = st.number_input("Rows", min_value=1, max_value=5, value=2, key="univ_n_rows")
+        n_cols = st.number_input("Columns", min_value=1, max_value=5, value=2, key="univ_n_cols")
     else:
         layout_map = {
             "1×1 (Single)": (1, 1), "1×2 (Horizontal)": (1, 2),
@@ -361,7 +803,8 @@ with st.sidebar:
 
     data_source = st.radio(
         "Data source",
-        ["Upload files", "Browse server", "Generate synthetic"],
+        DATA_SOURCE_OPTIONS,
+        key="univ_data_source",
         help="Load data from file or generate test data",
     )
 
@@ -406,6 +849,7 @@ with st.sidebar:
             ["*.*", "*.csv", "*.npz", "*.npy", "*.txt", "*.dat",
              "*.png", "*.tif", "*.tiff", "*.jpg"],
             index=0,
+            key="univ_file_pattern",
         )
 
         selected_files = folder_browser(
@@ -522,6 +966,7 @@ with st.sidebar:
             st.session_state['univ_loaded_data'] = {}
             st.session_state['univ_loaded_images'] = {}
             st.session_state['univ_curve_styles'] = {}
+            st.session_state.pop("univ_pending_plot_spec", None)
             st.rerun()
 
 # ---------------------------------------------------------------------------
@@ -647,7 +1092,10 @@ for subplot_idx, tab in enumerate(subplot_tabs):
                                     'enabled': True,
                                 }
 
-                            defaults = st.session_state['univ_curve_styles'][style_key]
+                            defaults = _sanitize_curve_style_entry(
+                                st.session_state['univ_curve_styles'][style_key]
+                            )
+                            st.session_state['univ_curve_styles'][style_key] = defaults
 
                             st.markdown(f"**{data_name} → {yc}**")
                             sc1, sc2, sc3, sc4, sc5, sc6, sc7 = st.columns(7)
@@ -781,15 +1229,17 @@ for subplot_idx, tab in enumerate(subplot_tabs):
         # =================================================================
         elif plot_category == "2D Image/Heatmap":
             # Data source: image array or tabular pivot
+            source_key = f"univ_2dsrc_{subplot_idx}"
+            if st.session_state.get(source_key) not in SOURCE_2D_OPTIONS:
+                st.session_state[source_key] = SOURCE_2D_OPTIONS[0]
             source_type = st.radio(
                 "Source type",
-                ["Image array (NPY/NPZ/PNG)" if image_names else "(No images loaded)",
-                 "Tabular data (CSV pivot)" if data_names else "(No tabular data loaded)"],
+                SOURCE_2D_OPTIONS,
                 horizontal=True,
-                key=f"univ_2dsrc_{subplot_idx}",
+                key=source_key,
             )
 
-            if "Image array" in source_type and image_names:
+            if source_type == "Image array" and image_names:
                 img_name = st.selectbox("Image", image_names,
                                         key=f"univ_img_{subplot_idx}")
                 img_raw = st.session_state['univ_loaded_images'][img_name]
@@ -808,7 +1258,7 @@ for subplot_idx, tab in enumerate(subplot_tabs):
                 config['source'] = 'image'
                 config['img_2d'] = img_2d
 
-            elif "Tabular" in source_type and data_names:
+            elif source_type == "Tabular data" and data_names:
                 data_name = st.selectbox("Dataset", data_names,
                                          key=f"univ_data_2d_{subplot_idx}")
                 df = st.session_state['univ_loaded_data'][data_name]
@@ -834,7 +1284,10 @@ for subplot_idx, tab in enumerate(subplot_tabs):
                 config['y_col'] = y_col
                 config['z_col'] = z_col
             else:
-                st.warning("No suitable data loaded for this source type.")
+                if source_type == "Image array":
+                    st.warning("No image arrays loaded for this source type.")
+                else:
+                    st.warning("No tabular datasets loaded for this source type.")
                 subplot_configs.append({'enabled': False})
                 continue
 
@@ -949,6 +1402,66 @@ for subplot_idx, tab in enumerate(subplot_tabs):
             })
 
         subplot_configs.append(config)
+
+# ---------------------------------------------------------------------------
+# Python Editor (Two-way GUI <-> Code)
+# ---------------------------------------------------------------------------
+
+current_univ_plot_spec = _build_univ_plot_spec(n_rows, n_cols, total_subplots)
+st.session_state["univ_current_plot_spec"] = current_univ_plot_spec
+
+if not st.session_state.get("univ_editor_code"):
+    st.session_state["univ_editor_code"] = _generate_univ_editor_python(current_univ_plot_spec)
+
+st.divider()
+st.header("🧠 Python Plot Editor (Experimental)")
+st.caption("Two-way control: GUI -> Python script -> GUI.")
+st.caption("Code runs in the app process. Only run trusted code.")
+
+pending_editor_code = st.session_state.pop("univ_editor_code_pending", None)
+if pending_editor_code is not None:
+    st.session_state["univ_editor_code"] = pending_editor_code
+
+editor_code = st.text_area(
+    "Editable Python script",
+    key="univ_editor_code",
+    height=320,
+    help="Edit plot_spec['widget_state'] and click 'Run Edited Python' to sync the GUI."
+)
+
+ed_col1, ed_col2 = st.columns(2)
+with ed_col1:
+    if st.button("🧾 Show Python from Current GUI", key="univ_editor_generate"):
+        st.session_state["univ_editor_code_pending"] = _generate_univ_editor_python(current_univ_plot_spec)
+        st.session_state["univ_editor_status"] = "Editor refreshed from current GUI state."
+        st.session_state["univ_editor_warnings"] = []
+        st.rerun()
+
+with ed_col2:
+    if st.button("▶️ Run Edited Python", key="univ_editor_run", type="primary"):
+        try:
+            normalized_spec, warnings = _execute_univ_editor(
+                editor_code,
+                current_univ_plot_spec,
+                st.session_state['univ_loaded_data'],
+                st.session_state['univ_loaded_images'],
+            )
+            st.session_state["univ_pending_plot_spec"] = normalized_spec
+            st.session_state["univ_editor_status"] = "Script applied. GUI synced from edited plot_spec."
+            st.session_state["univ_editor_warnings"] = warnings
+            st.rerun()
+        except Exception as exc:
+            st.session_state["univ_editor_status"] = f"Script execution failed: {exc}"
+            st.session_state["univ_editor_warnings"] = []
+
+if st.session_state.get("univ_editor_status"):
+    status_text = st.session_state["univ_editor_status"]
+    if status_text.lower().startswith("script execution failed"):
+        st.error(status_text)
+    else:
+        st.success(status_text)
+for warning_msg in st.session_state.get("univ_editor_warnings", []):
+    st.warning(warning_msg)
 
 # ---------------------------------------------------------------------------
 # Generate Figure (reactive — auto-updates on any widget change)

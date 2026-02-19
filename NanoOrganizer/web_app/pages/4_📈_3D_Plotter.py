@@ -13,6 +13,8 @@ import plotly.graph_objects as go
 import plotly.express as px
 from scipy.interpolate import griddata
 import sys
+import copy
+import pprint
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -23,11 +25,35 @@ from components.floating_button import floating_sidebar_toggle
 _user_mode = st.session_state.get("user_mode", False)
 _start_dir = st.session_state.get("user_start_dir", None)
 
+DATA_SOURCE_OPTIONS = ["Upload CSV", "Browse server", "Generate synthetic"]
+PLOT_TYPE_OPTIONS = ["Surface", "Scatter 3D", "Contour 3D", "Wireframe", "Mesh"]
+FUNCTION_OPTIONS = ["Gaussian", "Ripple", "Saddle", "Volcano", "Waves", "Mexican Hat"]
+COLORSCALE_OPTIONS = [
+    'Viridis', 'Plasma', 'Inferno', 'Magma', 'Cividis',
+    'Turbo', 'Rainbow', 'Jet', 'Hot', 'Cool',
+    'Portland', 'Electric', 'Picnic', 'RdBu', 'Earth'
+]
+
 st.title("📈 Interactive 3D Plotter (Plotly)")
 st.markdown("XYZ + Color dimension - Fully interactive and rotatable!")
 
 # Floating sidebar toggle button (bottom-left)
 floating_sidebar_toggle()
+
+st.session_state.setdefault("d3_data_source", DATA_SOURCE_OPTIONS[0])
+st.session_state.setdefault("d3_function", FUNCTION_OPTIONS[0])
+st.session_state.setdefault("d3_grid_size", 50)
+st.session_state.setdefault("d3_x_col", None)
+st.session_state.setdefault("d3_y_col", None)
+st.session_state.setdefault("d3_z_col", None)
+st.session_state.setdefault("d3_use_color", True)
+st.session_state.setdefault("d3_color_col", None)
+st.session_state.setdefault("d3_plot_type", PLOT_TYPE_OPTIONS[0])
+st.session_state.setdefault("d3_colorscale", COLORSCALE_OPTIONS[0])
+st.session_state.setdefault("d3_opacity", 0.9)
+st.session_state.setdefault("d3_editor_code", "")
+st.session_state.setdefault("d3_editor_status", "")
+st.session_state.setdefault("d3_editor_warnings", [])
 
 # ---------------------------------------------------------------------------
 # Helper Functions
@@ -90,6 +116,158 @@ def create_meshgrid_from_data(x, y, z, grid_size=100):
     return X, Y, Z
 
 
+def _to_bool(value, default=False):
+    """Convert arbitrary values to bool with fallback."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
+
+
+def _to_float(value, default, min_value=None, max_value=None):
+    """Convert arbitrary values to float with optional clamp."""
+    fallback = 0.0 if default is None else default
+    try:
+        parsed = float(value)
+    except Exception:
+        try:
+            parsed = float(fallback)
+        except Exception:
+            parsed = 0.0
+    if min_value is not None:
+        parsed = max(parsed, min_value)
+    if max_value is not None:
+        parsed = min(parsed, max_value)
+    return parsed
+
+
+def _build_3d_plot_spec(x_col, y_col, z_col, use_color, color_col, plot_type, colorscale, opacity):
+    """Build serializable 3D plot config from current UI state."""
+    return {
+        "version": 1,
+        "x_col": str(x_col),
+        "y_col": str(y_col),
+        "z_col": str(z_col),
+        "use_color": bool(use_color),
+        "color_col": str(color_col) if color_col else None,
+        "plot_type": str(plot_type),
+        "colorscale": str(colorscale),
+        "opacity": float(opacity),
+    }
+
+
+def _generate_3d_editor_python(plot_spec):
+    """Generate editable Python code for the 3D plotter."""
+    spec_text = pprint.pformat(plot_spec, sort_dicts=False, width=100, compact=False)
+    return (
+        "# NanoOrganizer 3D plot editor (experimental)\n"
+        "# Edit plot_spec and click 'Run Edited Python'.\n"
+        "# The app uses `result` (if defined) otherwise `plot_spec`.\n\n"
+        f"plot_spec = {spec_text}\n\n"
+        "# Example tweaks:\n"
+        "# plot_spec['plot_type'] = 'Scatter 3D'\n"
+        "# plot_spec['opacity'] = 0.6\n\n"
+        "result = plot_spec\n"
+    )
+
+
+def _sanitize_3d_plot_spec(candidate, fallback_spec, columns):
+    """Sanitize user-edited 3D plot spec and return (spec, warnings)."""
+    warnings = []
+    if not isinstance(candidate, dict):
+        warnings.append("Edited code did not return a dict; keeping previous settings.")
+        return copy.deepcopy(fallback_spec), warnings
+
+    normalized = copy.deepcopy(fallback_spec)
+
+    for axis_key in ["x_col", "y_col", "z_col"]:
+        proposed = str(candidate.get(axis_key, normalized[axis_key]))
+        if proposed in columns:
+            normalized[axis_key] = proposed
+        elif axis_key in candidate:
+            warnings.append(f"Ignored unknown {axis_key} '{proposed}'.")
+
+    proposed_use_color = _to_bool(candidate.get("use_color", normalized.get("use_color", False)), False)
+    normalized["use_color"] = proposed_use_color
+
+    proposed_color_col = candidate.get("color_col", normalized.get("color_col"))
+    if proposed_color_col is None:
+        normalized["color_col"] = None
+    else:
+        proposed_color_col = str(proposed_color_col)
+        if proposed_color_col in columns:
+            normalized["color_col"] = proposed_color_col
+        else:
+            warnings.append(f"Ignored unknown color_col '{proposed_color_col}'.")
+
+    if normalized["use_color"] and not normalized["color_col"]:
+        non_axis_cols = [c for c in columns if c not in {normalized["x_col"], normalized["y_col"], normalized["z_col"]}]
+        normalized["color_col"] = non_axis_cols[0] if non_axis_cols else normalized["z_col"]
+
+    plot_type = candidate.get("plot_type", normalized.get("plot_type"))
+    if plot_type in PLOT_TYPE_OPTIONS:
+        normalized["plot_type"] = plot_type
+    elif "plot_type" in candidate:
+        warnings.append(f"Ignored unsupported plot_type '{plot_type}'.")
+
+    colorscale = candidate.get("colorscale", normalized.get("colorscale"))
+    if colorscale in COLORSCALE_OPTIONS:
+        normalized["colorscale"] = colorscale
+    elif "colorscale" in candidate:
+        warnings.append(f"Ignored unsupported colorscale '{colorscale}'.")
+
+    normalized["opacity"] = _to_float(candidate.get("opacity", normalized.get("opacity", 0.9)), 0.9, 0.1, 1.0)
+
+    return normalized, warnings
+
+
+def _apply_3d_plot_spec_to_state(plot_spec, columns):
+    """Apply normalized 3D plot spec to session state before widget creation."""
+    if plot_spec.get("x_col") in columns:
+        st.session_state["d3_x_col"] = plot_spec["x_col"]
+    if plot_spec.get("y_col") in columns:
+        st.session_state["d3_y_col"] = plot_spec["y_col"]
+    if plot_spec.get("z_col") in columns:
+        st.session_state["d3_z_col"] = plot_spec["z_col"]
+
+    if plot_spec.get("plot_type") in PLOT_TYPE_OPTIONS:
+        st.session_state["d3_plot_type"] = plot_spec["plot_type"]
+    if plot_spec.get("colorscale") in COLORSCALE_OPTIONS:
+        st.session_state["d3_colorscale"] = plot_spec["colorscale"]
+    st.session_state["d3_opacity"] = _to_float(plot_spec.get("opacity", 0.9), 0.9, 0.1, 1.0)
+    st.session_state["d3_use_color"] = _to_bool(plot_spec.get("use_color", False), False)
+
+    color_col = plot_spec.get("color_col")
+    if color_col in columns:
+        st.session_state["d3_color_col"] = color_col
+    elif columns:
+        st.session_state["d3_color_col"] = columns[min(3, len(columns) - 1)]
+
+
+def _execute_3d_editor(code_text, base_plot_spec, columns):
+    """Execute editor code and sanitize returned plot spec."""
+    execution_locals = {
+        "plot_spec": copy.deepcopy(base_plot_spec),
+        "result": None,
+        "columns": list(columns),
+        "copy": copy,
+        "np": np,
+        "pd": pd,
+    }
+    exec(code_text, {"__builtins__": __builtins__}, execution_locals)
+    candidate = execution_locals.get("result")
+    if candidate is None:
+        candidate = execution_locals.get("plot_spec")
+    return _sanitize_3d_plot_spec(candidate, base_plot_spec, columns)
+
+
 # ---------------------------------------------------------------------------
 # Sidebar: Data Loading
 # ---------------------------------------------------------------------------
@@ -99,7 +277,8 @@ with st.sidebar:
 
     data_source = st.radio(
         "Data source",
-        ["Upload CSV", "Browse server", "Generate synthetic"]
+        DATA_SOURCE_OPTIONS,
+        key="d3_data_source"
     )
 
     df = None
@@ -156,10 +335,11 @@ with st.sidebar:
 
         func_type = st.selectbox(
             "Function",
-            ["Gaussian", "Ripple", "Saddle", "Volcano", "Waves", "Mexican Hat"]
+            FUNCTION_OPTIONS,
+            key="d3_function"
         )
 
-        grid_size = st.slider("Grid size", 20, 200, 50, 10)
+        grid_size = st.slider("Grid size", 20, 200, 50, 10, key="d3_grid_size")
 
         if st.button("🎲 Generate"):
             x = np.linspace(-5, 5, grid_size)
@@ -207,13 +387,26 @@ with st.sidebar:
 
     columns = list(df.columns)
 
-    x_col = st.selectbox("X-axis", columns, index=0)
-    y_col = st.selectbox("Y-axis", columns, index=min(1, len(columns)-1))
-    z_col = st.selectbox("Z-axis", columns, index=min(2, len(columns)-1))
+    if "d3_pending_plot_spec" in st.session_state:
+        pending_spec = st.session_state.pop("d3_pending_plot_spec")
+        _apply_3d_plot_spec_to_state(pending_spec, columns)
 
-    use_color = st.checkbox("Use 4th dimension for color", value=len(columns) > 3)
+    if not st.session_state.get("d3_x_col") or st.session_state.get("d3_x_col") not in columns:
+        st.session_state["d3_x_col"] = columns[0]
+    if not st.session_state.get("d3_y_col") or st.session_state.get("d3_y_col") not in columns:
+        st.session_state["d3_y_col"] = columns[min(1, len(columns) - 1)]
+    if not st.session_state.get("d3_z_col") or st.session_state.get("d3_z_col") not in columns:
+        st.session_state["d3_z_col"] = columns[min(2, len(columns) - 1)]
+    if not st.session_state.get("d3_color_col") or st.session_state.get("d3_color_col") not in columns:
+        st.session_state["d3_color_col"] = columns[min(3, len(columns) - 1)] if columns else None
+
+    x_col = st.selectbox("X-axis", columns, key="d3_x_col")
+    y_col = st.selectbox("Y-axis", columns, key="d3_y_col")
+    z_col = st.selectbox("Z-axis", columns, key="d3_z_col")
+
+    use_color = st.checkbox("Use 4th dimension for color", key="d3_use_color", value=len(columns) > 3)
     if use_color and len(columns) > 3:
-        color_col = st.selectbox("Color column", columns, index=min(3, len(columns)-1))
+        color_col = st.selectbox("Color column", columns, key="d3_color_col")
     else:
         color_col = None
 
@@ -222,26 +415,87 @@ with st.sidebar:
 
     plot_type = st.radio(
         "Type",
-        ["Surface", "Scatter 3D", "Contour 3D", "Wireframe", "Mesh"],
+        PLOT_TYPE_OPTIONS,
+        key="d3_plot_type",
         help="All plots are fully interactive!"
     )
 
     # Colorscale
     st.header("🎨 Style")
 
-    colorscales = ['Viridis', 'Plasma', 'Inferno', 'Magma', 'Cividis',
-                  'Turbo', 'Rainbow', 'Jet', 'Hot', 'Cool',
-                  'Portland', 'Electric', 'Picnic', 'RdBu', 'Earth']
-
-    colorscale = st.selectbox("Colorscale", colorscales, index=0)
+    colorscale = st.selectbox("Colorscale", COLORSCALE_OPTIONS, key="d3_colorscale")
 
     # Opacity
-    opacity = st.slider("Opacity", 0.1, 1.0, 0.9, 0.1)
+    opacity = st.slider("Opacity", 0.1, 1.0, 0.9, 0.1, key="d3_opacity")
 
 # ---------------------------------------------------------------------------
 # Main Area: 3D Plot
 # ---------------------------------------------------------------------------
 
+current_3d_plot_spec = _build_3d_plot_spec(
+    x_col=x_col,
+    y_col=y_col,
+    z_col=z_col,
+    use_color=use_color,
+    color_col=color_col,
+    plot_type=plot_type,
+    colorscale=colorscale,
+    opacity=opacity,
+)
+st.session_state["d3_current_plot_spec"] = current_3d_plot_spec
+
+if not st.session_state.get("d3_editor_code"):
+    st.session_state["d3_editor_code"] = _generate_3d_editor_python(current_3d_plot_spec)
+
+st.header("🧠 Python Plot Editor (Experimental)")
+st.caption("Two-way control: GUI -> Python script -> GUI.")
+st.caption("Code runs in the app process. Only run trusted code.")
+
+pending_editor_code = st.session_state.pop("d3_editor_code_pending", None)
+if pending_editor_code is not None:
+    st.session_state["d3_editor_code"] = pending_editor_code
+
+editor_code = st.text_area(
+    "Editable Python script",
+    key="d3_editor_code",
+    height=280,
+    help="Edit plot_spec and click 'Run Edited Python' to update controls."
+)
+
+ed_col1, ed_col2 = st.columns(2)
+with ed_col1:
+    if st.button("🧾 Show Python from Current GUI", key="d3_editor_generate"):
+        st.session_state["d3_editor_code_pending"] = _generate_3d_editor_python(current_3d_plot_spec)
+        st.session_state["d3_editor_status"] = "Editor refreshed from current GUI state."
+        st.session_state["d3_editor_warnings"] = []
+        st.rerun()
+
+with ed_col2:
+    if st.button("▶️ Run Edited Python", key="d3_editor_run", type="primary"):
+        try:
+            normalized_spec, warnings = _execute_3d_editor(
+                editor_code,
+                current_3d_plot_spec,
+                columns,
+            )
+            st.session_state["d3_pending_plot_spec"] = normalized_spec
+            st.session_state["d3_editor_status"] = "Script applied. GUI synced from edited plot_spec."
+            st.session_state["d3_editor_warnings"] = warnings
+            st.rerun()
+        except Exception as exc:
+            st.session_state["d3_editor_status"] = f"Script execution failed: {exc}"
+            st.session_state["d3_editor_warnings"] = []
+
+if st.session_state.get("d3_editor_status"):
+    status_text = st.session_state["d3_editor_status"]
+    if status_text.lower().startswith("script execution failed"):
+        st.error(status_text)
+    else:
+        st.success(status_text)
+for warning_msg in st.session_state.get("d3_editor_warnings", []):
+    st.warning(warning_msg)
+
+st.divider()
 st.header(f"📊 Interactive 3D Plot: {plot_type}")
 
 # Get data

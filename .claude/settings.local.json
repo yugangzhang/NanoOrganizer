@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip show:*)",
+      "Bash(python3 -m py_compile:*)",
+      "Bash(for f in NanoOrganizer/web_app/pages/*.py NanoOrganizer/web_app/components/*.py NanoOrganizer/web_app/Home.py)",
+      "Bash(do python3 -m py_compile \"$f\")",
+      "Bash(echo:*)",
+      "Bash(done)",
+      "Bash(pip install:*)",
+      "Bash(sudo chown -R yuzhang:ocean /home/yuzhang/Repos/NanoOrganizer/Nanoorganizer.egg-info/)"
+    ]
+  }
+}
