@@ -29,10 +29,19 @@ import pprint                      # noqa: E402
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from components.floating_button import floating_sidebar_toggle  # noqa: E402
+from components.security import (  # noqa: E402
+    assert_path_allowed,
+    initialize_security_context,
+    is_path_allowed,
+    require_authentication,
+)
 
 from NanoOrganizer import DataOrganizer                       # noqa: E402
 from NanoOrganizer.viz import PLOTTER_REGISTRY                # noqa: E402
 from NanoOrganizer.core.run import DEFAULT_LOADERS            # noqa: E402
+
+initialize_security_context()
+require_authentication()
 
 # ---------------------------------------------------------------------------
 # SELECTORS – single source of truth for dynamic parameter controls.
@@ -211,7 +220,11 @@ def _sanitize_data_viewer_plot_spec(candidate, fallback_spec, run_keys,
         return copy.deepcopy(fallback_spec), warnings
 
     normalized = copy.deepcopy(fallback_spec)
-    normalized["data_dir"] = str(candidate.get("data_dir", normalized["data_dir"]))
+    proposed_data_dir = str(candidate.get("data_dir", normalized["data_dir"]))
+    if is_path_allowed(proposed_data_dir, allow_nonexistent=True):
+        normalized["data_dir"] = proposed_data_dir
+    elif "data_dir" in candidate:
+        warnings.append("Ignored data_dir outside allowed folders.")
 
     selected_runs = candidate.get("selected_runs", normalized.get("selected_runs", []))
     if isinstance(selected_runs, str):
@@ -268,7 +281,9 @@ def _sanitize_data_viewer_plot_spec(candidate, fallback_spec, run_keys,
 
 def _apply_data_viewer_plot_spec_to_state(plot_spec):
     """Apply sanitized Data Viewer config to session state."""
-    st.session_state["dv_data_dir"] = str(plot_spec.get("data_dir", st.session_state.get("dv_data_dir", "")))
+    proposed_data_dir = str(plot_spec.get("data_dir", st.session_state.get("dv_data_dir", "")))
+    if is_path_allowed(proposed_data_dir, allow_nonexistent=True):
+        st.session_state["dv_data_dir"] = proposed_data_dir
     st.session_state["dv_selected_runs"] = list(plot_spec.get("selected_runs", st.session_state.get("dv_selected_runs", [])))
     st.session_state["dv_selected_dtype"] = plot_spec.get("data_type", st.session_state.get("dv_selected_dtype"))
     st.session_state["dv_selected_plot_type"] = plot_spec.get("plot_type", st.session_state.get("dv_selected_plot_type"))
@@ -312,6 +327,8 @@ st.title("NanoOrganizer — Data Browser")
 floating_sidebar_toggle()
 
 default_path = _auto_detect_demo()
+if not is_path_allowed(default_path, allow_nonexistent=True):
+    default_path = st.session_state.get("user_start_dir", str(Path.cwd()))
 st.session_state.setdefault("dv_data_dir", default_path)
 st.session_state.setdefault("dv_selected_runs", [])
 st.session_state.setdefault("dv_selected_dtype", None)
@@ -336,10 +353,14 @@ with st.sidebar:
         _apply_data_viewer_plot_spec_to_state(pending_spec)
 
     data_dir = st.text_input("Data directory", key="dv_data_dir")
+    if data_dir and not is_path_allowed(data_dir, allow_nonexistent=True):
+        st.error("Data directory is outside your allowed folders.")
 
     if "org" not in st.session_state or st.button("🔄 Load/Reload"):
         try:
-            st.session_state["org"] = DataOrganizer.load(data_dir)
+            safe_data_dir = assert_path_allowed(data_dir, path_label="Data directory")
+            st.session_state["dv_data_dir"] = str(safe_data_dir)
+            st.session_state["org"] = DataOrganizer.load(str(safe_data_dir))
             st.session_state.pop("_prev_dir", None)
             st.success("✅ Data loaded!")
         except Exception as exc:

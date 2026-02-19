@@ -20,6 +20,10 @@ import plotly.graph_objects as go
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from components.folder_browser import folder_browser  # noqa: E402
 from components.floating_button import floating_sidebar_toggle  # noqa: E402
+from components.security import (  # noqa: E402
+    initialize_security_context,
+    require_authentication,
+)
 from components.fitting_engine_registry import (  # noqa: E402
     get_engine_schema_rows as registry_get_engine_schema_rows,
     get_ready_backend_labels as registry_get_ready_backend_labels,
@@ -63,6 +67,8 @@ FIT_BACKENDS = {
 AXIS_SCALE_OPTIONS = ["linear-linear", "log-x", "log-y", "log-log"]
 
 # User-mode restriction (set by nanoorganizer_user)
+initialize_security_context()
+require_authentication()
 _user_mode = st.session_state.get("user_mode", False)
 _start_dir = st.session_state.get("user_start_dir", None)
 

@@ -28,8 +28,15 @@ import re
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from components.folder_browser import folder_browser
 from components.floating_button import floating_sidebar_toggle
+from components.security import (
+    initialize_security_context,
+    is_path_allowed,
+    require_authentication,
+)
 
 # User-mode restriction (set by nanoorganizer_user)
+initialize_security_context()
+require_authentication()
 _user_mode = st.session_state.get("user_mode", False)
 _start_dir = st.session_state.get("user_start_dir", None)
 
@@ -905,7 +912,7 @@ with st.sidebar:
         Path(__file__).resolve().parent.parent.parent.parent / "TestData",
         Path.cwd() / "TestData",
     ]:
-        if _candidate.is_dir():
+        if _candidate.is_dir() and is_path_allowed(_candidate):
             _test_data_dir = _candidate
             break
 
