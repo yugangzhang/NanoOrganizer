@@ -1365,10 +1365,13 @@ else:
     else:
         st.info(f"✅ {plotted_count} curve(s) plotted. Switch to 'Interactive (Plotly)' mode to see hover values!")
 
-# Fitting has moved to dedicated workbench page
+# Fitting note for base branch
 st.divider()
 st.header("🔬 Fitting")
-st.info("Use page `9_🧪_1D_Fitting_Workbench` for single/batch fitting, range controls, and log-scale result views.")
+st.info(
+    "Advanced fitting workbench is part of the private `viz-adv` track. "
+    "This `viz-base` branch keeps visualization and data-management tools only."
+)
 
 # Export
 st.divider()
