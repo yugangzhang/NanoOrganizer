@@ -258,10 +258,12 @@ if selected.empty:
     st.stop()
 
 # --- Plot controls ---------------------------------------------------------
+# Compact top row: scales, coloring, stacking, cap.
 pc1, pc2, pc3, pc4, pc5 = st.columns(5)
 logx = pc1.checkbox("log q", value=True)
 logy = pc2.checkbox("log I", value=True)
-color_by = pc3.selectbox("Color by", ["time", "index", "sample"], index=0)
+color_by = pc3.selectbox("Color by", ["time", "index", "sample", "manual"], index=0,
+                         help="'manual' unlocks per-curve color/marker/style below.")
 waterfall = pc4.number_input("Waterfall ×", value=1.0, min_value=1.0, step=0.5,
                              help="Multiply each successive curve by this factor to stack them.")
 max_curves = pc5.number_input("Max curves", value=60, min_value=1, step=10)
@@ -270,56 +272,189 @@ if len(selected) > max_curves:
     st.info(f"Showing first {int(max_curves)} of {len(selected)} curves (raise 'Max curves' to see more).")
     selected = selected.iloc[: int(max_curves)].reset_index(drop=True)
 
-# color scale by time/index
-times = selected["timestamp"]
-if color_by == "time" and times.notna().any():
-    t0 = times.min()
-    cvals = [(t - t0).total_seconds() if pd.notna(t) else None for t in times]
-    if all(v is None for v in cvals):
-        cvals = list(range(len(selected)))
-    cbar_title = "t − t₀ (s)"
-elif color_by == "sample":
-    cats = {s: i for i, s in enumerate(sorted(selected["sample"].unique()))}
-    cvals = [cats[s] for s in selected["sample"]]
-    cbar_title = "sample #"
-else:
-    cvals = list(range(len(selected)))
-    cbar_title = "index"
+# --- Axis ranges + labels (xlim / ylim / titles) ---------------------------
+with st.expander("📐 Axis ranges & labels", expanded=False):
+    ac1, ac2, ac3, ac4 = st.columns(4)
+    xmin = ac1.text_input("q min", value="", help="blank = auto")
+    xmax = ac2.text_input("q max", value="")
+    ymin = ac3.text_input("I min", value="", help="blank = auto (see 'auto I' below)")
+    ymax = ac4.text_input("I max", value="")
+    auto_y = st.checkbox(
+        "Auto I range from visible q-window", value=True,
+        help="Rescale I to the data inside [q min, q max]. Overridden by any "
+             "I min / I max you type above.",
+    )
+    lc1, lc2, lc3 = st.columns(3)
+    plot_title = lc1.text_input("Title", value="SAXS I(q)")
+    x_label = lc2.text_input("X label", value="q (Å⁻¹)")
+    y_label = lc3.text_input("Y label", value="I(q)")
+    gc1, gc2, gc3 = st.columns(3)
+    show_grid = gc1.checkbox("Grid", value=True)
+    show_legend = gc2.checkbox("Legend", value=(len(selected) <= 20))
+    marker_mode = gc3.selectbox("Draw as", ["lines", "lines+markers", "markers"], index=0)
 
-vmin, vmax = (min(v for v in cvals if v is not None), max(v for v in cvals if v is not None)) \
-    if any(v is not None for v in cvals) else (0, 1)
-span = (vmax - vmin) or 1.0
+def _f(txt):
+    try:
+        return float(txt)
+    except (TypeError, ValueError):
+        return None
 
+# For a log axis Plotly wants log10 of the bound.
+def _axrange(lo, hi, is_log):
+    lo, hi = _f(lo), _f(hi)
+    if lo is None and hi is None:
+        return None
+    if is_log:
+        import math
+        lo = math.log10(lo) if (lo and lo > 0) else None
+        hi = math.log10(hi) if (hi and hi > 0) else None
+    return [lo, hi] if (lo is not None and hi is not None) else None
+
+# --- Global marker/line defaults (apply to all curves) ---------------------
 import plotly.express as px
+
+MARKERS = ["circle", "square", "triangle-up", "triangle-down", "diamond",
+           "cross", "x", "star", "hexagon", "pentagon"]
+DASHES = {"solid": "solid", "dash": "dash", "dot": "dot", "dashdot": "dashdot"}
+
+with st.expander("🎨 Global style (line width / marker size / opacity)", expanded=False):
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    g_lw = sc1.slider("Line width", 0.5, 6.0, 1.6, 0.1)
+    g_ms = sc2.slider("Marker size", 2, 16, 6, 1)
+    g_alpha = sc3.slider("Opacity", 0.1, 1.0, 0.9, 0.05)
+    g_dash = sc4.selectbox("Line style", list(DASHES.keys()), index=0)
+
+# --- Coloring: auto colormap vs. per-curve manual --------------------------
+times = selected["timestamp"]
+manual = (color_by == "manual")
+per_curve = {}   # file -> dict(color, marker, dash, lw, ms, alpha)
+
+if manual:
+    st.caption("Per-curve styling — expand each to override color / marker / line / width / opacity.")
+    NAMED = {"Blue": "#1f77b4", "Orange": "#ff7f0e", "Green": "#2ca02c",
+             "Red": "#d62728", "Purple": "#9467bd", "Brown": "#8c564b",
+             "Pink": "#e377c2", "Gray": "#7f7f7f", "Olive": "#bcbd22",
+             "Cyan": "#17becf", "Black": "#000000", "Magenta": "#FF00FF"}
+    names = list(NAMED.keys())
+    for i, row in enumerate(selected.itertuples()):
+        with st.expander(f"🔧 {row.label}", expanded=(len(selected) <= 4)):
+            m1, m2, m3, m4, m5, m6 = st.columns(6)
+            cname = m1.selectbox("Color", names, index=i % len(names), key=f"c_{row.file}")
+            mk = m2.selectbox("Marker", ["none"] + MARKERS, index=0, key=f"m_{row.file}")
+            ds = m3.selectbox("Line", ["none"] + list(DASHES.keys()), index=1, key=f"d_{row.file}")
+            lw = m4.slider("Width", 0.5, 6.0, g_lw, 0.1, key=f"lw_{row.file}")
+            ms = m5.slider("Size", 2, 16, g_ms, 1, key=f"ms_{row.file}")
+            al = m6.slider("Opacity", 0.1, 1.0, g_alpha, 0.05, key=f"al_{row.file}")
+            per_curve[row.file] = dict(color=NAMED[cname], marker=mk, dash=ds,
+                                       lw=lw, ms=ms, alpha=al)
+    cvals = list(range(len(selected)))
+    cbar_title = None
+else:
+    if color_by == "time" and times.notna().any():
+        t0 = times.min()
+        cvals = [(t - t0).total_seconds() if pd.notna(t) else None for t in times]
+        if all(v is None for v in cvals):
+            cvals = list(range(len(selected)))
+        cbar_title = "t − t₀ (s)"
+    elif color_by == "sample":
+        cats = {s: i for i, s in enumerate(sorted(selected["sample"].unique()))}
+        cvals = [cats[s] for s in selected["sample"]]
+        cbar_title = "sample #"
+    else:
+        cvals = list(range(len(selected)))
+        cbar_title = "index"
+
+_valid = [v for v in cvals if v is not None]
+vmin, vmax = (min(_valid), max(_valid)) if _valid else (0, 1)
+span = (vmax - vmin) or 1.0
 palette = px.colors.sample_colorscale(
     "Turbo", [((v - vmin) / span) if v is not None else 0.0 for v in cvals]
 )
 
+def _rgba(hexc, alpha):
+    hexc = hexc.lstrip("#")
+    if len(hexc) != 6:
+        return hexc
+    r, g, b = (int(hexc[j:j + 2], 16) for j in (0, 2, 4))
+    return f"rgba({r},{g},{b},{alpha})"
+
+# --- Build figure ----------------------------------------------------------
+# q-window used both for the x-axis and (when auto_y) to pick the I range.
+q_lo, q_hi = _f(xmin), _f(xmax)
+y_in_window = []   # collect plotted I values that fall inside [q_lo, q_hi]
+
 fig = go.Figure()
-for i, (row, cval, col) in enumerate(zip(selected.itertuples(), cvals, palette)):
+for i, (row, auto_col) in enumerate(zip(selected.itertuples(), palette)):
     q, iq = load_curve(row.file)
     scale = waterfall ** i if waterfall > 1.0 else 1.0
+    y = iq * scale
     ts = row.timestamp.strftime("%m-%d %H:%M:%S") if pd.notna(row.timestamp) else "—"
+
+    # Gather y-values within the visible q-window for auto I-scaling.
+    m = np.isfinite(q) & np.isfinite(y)
+    if q_lo is not None:
+        m &= q >= q_lo
+    if q_hi is not None:
+        m &= q <= q_hi
+    if logy:
+        m &= y > 0     # log axis: ignore non-positive
+    if m.any():
+        y_in_window.append(y[m])
+
+    if manual:
+        s = per_curve[row.file]
+        color, alpha, lw, ms = s["color"], s["alpha"], s["lw"], s["ms"]
+        has_line = s["dash"] != "none"
+        has_mark = s["marker"] != "none"
+        mode = "lines+markers" if (has_line and has_mark) else ("markers" if has_mark else "lines")
+        dash = DASHES.get(s["dash"], "solid")
+        msym = s["marker"] if has_mark else "circle"
+    else:
+        color, alpha, lw, ms = auto_col, g_alpha, g_lw, g_ms
+        mode = marker_mode
+        dash = DASHES[g_dash]
+        msym = MARKERS[i % len(MARKERS)]
+
     fig.add_trace(go.Scatter(
-        x=q, y=iq * scale, mode="lines", name=row.label,
-        line=dict(color=col, width=1.4),
+        x=q, y=y, mode=mode, name=row.label,
+        line=dict(color=color, width=lw, dash=dash),
+        marker=dict(color=color, size=ms, symbol=msym),
+        opacity=alpha,
         hovertemplate=(
             f"<b>{row.label}</b><br>well={row.well} t={ts}"
             "<br>q=%{x:.4f} Å⁻¹<br>I=%{y:.3g}<extra></extra>"
         ),
-        showlegend=len(selected) <= 20,
+        showlegend=show_legend,
     ))
 
+xr = _axrange(xmin, xmax, logx)
+yr = _axrange(ymin, ymax, logy)
+
+# Auto I-range: fit the data inside the visible q-window, unless the user
+# typed explicit I min/max (those always win).
+if auto_y and (ymin.strip() == "" and ymax.strip() == "") and y_in_window:
+    allv = np.concatenate(y_in_window)
+    lo_v, hi_v = float(np.nanmin(allv)), float(np.nanmax(allv))
+    if np.isfinite(lo_v) and np.isfinite(hi_v) and hi_v > lo_v:
+        import math
+        if logy:
+            lo_l, hi_l = math.log10(lo_v), math.log10(hi_v)
+            pad = 0.05 * (hi_l - lo_l) or 0.1
+            yr = [lo_l - pad, hi_l + pad]
+        else:
+            pad = 0.05 * (hi_v - lo_v)
+            yr = [lo_v - pad, hi_v + pad]
 fig.update_layout(
-    height=650, template="plotly_white",
-    xaxis_title="q (Å⁻¹)", yaxis_title="I(q)" + (" × waterfall" if waterfall > 1 else ""),
-    xaxis_type="log" if logx else "linear",
-    yaxis_type="log" if logy else "linear",
-    margin=dict(l=60, r=20, t=30, b=50),
+    height=650, template="plotly_white", title=plot_title,
+    xaxis_title=x_label,
+    yaxis_title=y_label + (" × waterfall" if waterfall > 1 else ""),
+    xaxis=dict(type="log" if logx else "linear", range=xr, showgrid=show_grid),
+    yaxis=dict(type="log" if logy else "linear", range=yr, showgrid=show_grid),
+    margin=dict(l=60, r=20, t=45, b=50),
     legend=dict(font=dict(size=9)),
 )
-# color reference when legend is hidden
-if len(selected) > 20 and any(v is not None for v in cvals):
+# color reference when a colormap is used and legend is hidden
+if (not manual) and (not show_legend) and _valid and cbar_title:
     fig.add_trace(go.Scatter(
         x=[None], y=[None], mode="markers",
         marker=dict(colorscale="Turbo", cmin=vmin, cmax=vmax, color=[vmin],
