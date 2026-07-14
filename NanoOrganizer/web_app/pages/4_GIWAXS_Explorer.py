@@ -34,9 +34,6 @@ from __future__ import annotations
 
 import io
 import re
-import warnings
-from datetime import datetime
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -64,204 +61,36 @@ except Exception:  # pragma: no cover - standalone fallback
     def is_path_allowed(path, allow_nonexistent: bool = False):
         return True
 
+# Unified folder chooser (browser + text box) shared across all tabs. Falls
+# back to a plain text box when running the page standalone.
+try:
+    from NanoOrganizer.web_app.components.folder_browser import folder_picker
+    _HAVE_BROWSER = True
+except Exception:  # pragma: no cover - standalone fallback
+    _HAVE_BROWSER = False
 
-DEFAULT_ANALYSIS = (
-    "/nsls2/auto-storage/cms/proposals/2026-2/pass-320306/"
-    "experiments/0_Static/maxs/analysis"
+# Shared scattering engine — indexing, loaders, array/plot helpers, styling.
+# Some are aliased to the underscore names this page's body already uses.
+from NanoOrganizer.web_app.components.scattering import (
+    CMAPS, index_frames, load_raw, load_qimg, load_qphi, load_cir,
+    qimage_has_qr, resolve_qimage, heatmap_fig,
+    apply_mask as _apply_mask,
+    downsample as _downsample,
+    parse_centers as _parse_centers,
+    band_profile as _band_profile,
+    axrange as _axrange,
+    curve_style_controls as _curve_style_controls,
+    apply_curve_style as _apply_curve_style,
+    style_1d_axes as _style_1d_axes,
 )
 
-# Max pixels to keep for the raw-image heatmap; larger images are downsampled.
-_RAW_MAX_PIXELS = 500_000
 
-_TS_RE = re.compile(r"(\d{4})_(\d{2})_(\d{2})_(\d{2})_(\d{2})_(\d{2})")
-_TH_RE = re.compile(r"_th(-?\d+\.\d+)_")
-_SCAN_RE = re.compile(r"_(\d{6,})_\d{6}_")
-_WELL_RE = re.compile(r"_([A-H]\d{1,2})_(?=\d{4}_\d{2}_\d{2})")
+DEFAULT_ANALYSIS = (
+    "/home/yuzhang/NSLSII_Data_Link/nsls2_romote/cms_remote/2026-2/"
+    "pass-320306/experiments/0_Static/maxs/analysis"
+)
 
 
-# ---------------------------------------------------------------------------
-# Filename ↔ frame indexing
-# ---------------------------------------------------------------------------
-def stem_of(fname: str) -> str:
-    """Shared <name> stem: strip known prefixes / extensions from a file name.
-
-    Handles the mixed conventions used by the auto-reduction, e.g.
-    ``stitched/<name>.tiff``, ``q_image/qimg_<name>.tiff.npz`` and
-    ``cir_avg/Cir_Avg_<name>.tiff.csv`` all reduce to the same ``<name>``.
-    """
-    s = Path(fname).name
-    for pref in ("Cir_Avg_", "qphi_", "qimg_", "qc_"):
-        if s.startswith(pref):
-            s = s[len(pref):]
-    # Peel trailing extensions repeatedly (e.g. ".tiff.npz" → ".tiff" → "").
-    while True:
-        new = re.sub(r"\.(npz|csv|png|tiff)$", "", s)
-        if new == s:
-            return s
-        s = new
-
-
-def parse_meta(stem: str) -> dict:
-    ts = None
-    m = _TS_RE.search(stem)
-    if m:
-        try:
-            ts = datetime(*[int(x) for x in m.groups()])
-        except ValueError:
-            ts = None
-    th = None
-    m = _TH_RE.search(stem)
-    if m:
-        th = float(m.group(1))
-    scan = None
-    m = _SCAN_RE.search(stem)
-    if m:
-        scan = int(m.group(1))
-    well = None
-    m = _WELL_RE.search(stem)
-    if m:
-        well = m.group(1)
-    is_cal = bool(re.match(r"(AgBH|DirBeam|Empty|glassy|GC)", stem, re.I))
-    return dict(timestamp=ts, th=th, scan=scan, well=well, is_calibration=is_cal)
-
-
-@st.cache_data(show_spinner=False)
-def index_frames(analysis_dir: str) -> pd.DataFrame:
-    base = Path(analysis_dir)
-    dirs = {
-        "raw": (base / "stitched", "*.tiff"),
-        "qimg": (base / "q_image", "*.npz"),
-        "qphi": (base / "qphi", "*.npz"),
-        "cir": (base / "cir_avg", "*.csv"),
-    }
-    maps = {}
-    for key, (d, pat) in dirs.items():
-        maps[key] = ({stem_of(p.name): str(p) for p in d.glob(pat)}
-                     if d.is_dir() else {})
-    stems = sorted(set().union(*[set(m) for m in maps.values()]))
-    rows = []
-    for s in stems:
-        meta = parse_meta(s)
-        rows.append(dict(
-            stem=s, label=s,
-            raw=maps["raw"].get(s), qimg=maps["qimg"].get(s),
-            qphi=maps["qphi"].get(s), cir=maps["cir"].get(s),
-            has_raw=s in maps["raw"], has_qimg=s in maps["qimg"],
-            has_qphi=s in maps["qphi"], has_cir=s in maps["cir"], **meta,
-        ))
-    df = pd.DataFrame(rows)
-    if not df.empty:
-        df = df.sort_values(by=[c for c in ("timestamp", "th", "stem") if c in df],
-                            na_position="last").reset_index(drop=True)
-    return df
-
-
-# ---------------------------------------------------------------------------
-# Loaders
-# ---------------------------------------------------------------------------
-@st.cache_data(show_spinner=False)
-def load_raw(fpath: str):
-    from PIL import Image
-    return np.asarray(Image.open(fpath)).astype(float)
-
-
-@st.cache_data(show_spinner=False)
-def load_qimg(fpath: str):
-    d = np.load(fpath)
-    return (d.get("qimg"), d.get("qx"), d.get("qz"), d.get("qimg_mask"))
-
-
-@st.cache_data(show_spinner=False)
-def load_qphi(fpath: str):
-    d = np.load(fpath)
-    return (d.get("q"), d.get("phi"), d.get("qphi"), d.get("qphi_mask"))
-
-
-@st.cache_data(show_spinner=False)
-def load_cir(fpath: str):
-    df = pd.read_csv(fpath)
-    cols = {c.lower(): c for c in df.columns}
-    qcol = cols.get("q_ca") or cols.get("q") or df.columns[-2]
-    icol = cols.get("iq_ca") or cols.get("intensity") or df.columns[-1]
-    return df[qcol].to_numpy(float), df[icol].to_numpy(float)
-
-
-def _apply_mask(z, mask):
-    """Return a float copy with no-data entries set to NaN.
-
-    The auto-reduction marks the masked-out region (beamstop, detector gaps,
-    off-detector remesh pixels) two ways, and we honour both:
-
-    * ``qimg_mask == True`` flags the *no-data* region (it coincides exactly
-      with ``qimg == 0``); those pixels are blanked when the mask shape matches.
-    * Remeshed / caked maps store no-data as literal ``0`` (and any non-finite
-      value), so non-positive pixels are blanked as well.
-
-    Blanking (rather than clipping to a floor) lets the panels render gaps as
-    dark "no data" and lets line-cut ``nanmean`` ignore them.
-    """
-    z = np.asarray(z, float).copy()
-    if mask is not None and getattr(mask, "shape", None) == z.shape:
-        z[mask.astype(bool)] = np.nan          # mask True == masked-out
-    z[~np.isfinite(z)] = np.nan
-    z[z <= 0] = np.nan                          # 0 == no data in remeshed maps
-    return z
-
-
-def _log_scale(z):
-    with np.errstate(divide="ignore", invalid="ignore"):
-        return np.log10(np.clip(z, 1e-6, None))
-
-
-def _downsample(z, x, y, max_pixels=_RAW_MAX_PIXELS):
-    """Stride-decimate a 2D array (+ optional axes) to <= max_pixels."""
-    ny, nx = z.shape
-    step = max(1, int(np.ceil(np.sqrt(ny * nx / max_pixels))))
-    if step == 1:
-        return z, x, y
-    z = z[::step, ::step]
-    if x is not None:
-        x = np.asarray(x)[::step]
-    if y is not None:
-        y = np.asarray(y)[::step]
-    return z, x, y
-
-
-def _parse_centers(text: str):
-    out = []
-    for tok in re.split(r"[,\s]+", text.strip()):
-        if not tok:
-            continue
-        try:
-            out.append(float(tok))
-        except ValueError:
-            pass
-    return out
-
-
-def _band_profile(z, coord_along, coord_band, center, width, mask=None):
-    """Average ``z`` over a band ``center ± width/2`` along ``coord_band``.
-
-    ``z`` is 2D with axis-0 varying ``coord0`` and axis-1 varying ``coord1``.
-    Here ``coord_band`` selects which axis defines the integration band and
-    ``coord_along`` is the axis the resulting 1-D profile runs along.
-
-    Returns ``(x, y)`` where ``x = coord_along`` and ``y`` is the band mean, or
-    ``None`` when the band is empty. ``axis_band`` is inferred: whichever axis's
-    length matches ``coord_band``.
-    """
-    zc = _apply_mask(z, mask)
-    lo, hi = center - width / 2.0, center + width / 2.0
-    band = (coord_band >= lo) & (coord_band <= hi)
-    if not band.any():
-        return None
-    with warnings.catch_warnings():  # all-NaN columns → nan, not a scary warning
-        warnings.simplefilter("ignore", category=RuntimeWarning)
-        if len(coord_band) == zc.shape[0]:  # band runs down the rows → mean over rows
-            prof = np.nanmean(zc[band, :], axis=0)
-        else:                               # band runs across the cols → mean over cols
-            prof = np.nanmean(zc[:, band], axis=1)
-    return np.asarray(coord_along, float), prof
 
 
 # ===========================================================================
@@ -275,13 +104,26 @@ st.caption("Raw image · q-image · q–φ map · circular average — with q-im
 
 with st.sidebar:
     st.header("📁 Analysis folder")
-    analysis = st.text_input(
-        "analysis/ dir (has stitched/ q_image/ qphi/ cir_avg/)",
-        value=DEFAULT_ANALYSIS)
+
+    if _HAVE_BROWSER:
+        analysis = folder_picker(
+            key="giwaxs_analysis",
+            label="analysis/ dir (has stitched/ q_image/ qphi/ cir_avg/)",
+            default=DEFAULT_ANALYSIS,
+        )
+    else:
+        analysis = st.text_input(
+            "analysis/ dir (has stitched/ q_image/ qphi/ cir_avg/)",
+            value=DEFAULT_ANALYSIS)
+        if _HAVE_SECURITY and analysis and not is_path_allowed(
+            analysis, allow_nonexistent=True
+        ):
+            st.error("Folder outside allowed roots (secure mode).")
+            st.stop()
+
     if st.button("🔄 Rescan"):
         index_frames.clear()
-    if _HAVE_SECURITY and analysis and not is_path_allowed(analysis, allow_nonexistent=True):
-        st.error("Folder outside allowed roots (secure mode).")
+    if not analysis:
         st.stop()
 
     df = index_frames(analysis)
@@ -325,11 +167,29 @@ dc1, dc2, dc3, dc4 = st.columns(4)
 logI = dc1.checkbox("log I (2D panels)", value=True)
 logq = dc2.checkbox("log q (1D)", value=False)
 logiq = dc3.checkbox("log I (1D)", value=True)
-cmap = dc4.selectbox("2D colormap", ["Viridis", "Turbo", "Inferno", "Jet", "Cividis"], index=0)
+cmap = dc4.selectbox("2D colormap", CMAPS, index=0)  # default Turbo (item 4)
+
+# Second row: aspect ratio (shared by A & B, item 2) + B-panel axis mode (item 3)
+dc5, dc6 = st.columns(2)
+aspect_mode = dc5.selectbox(
+    "Aspect ratio (A & B)", ["Auto", "Equal (1:1)", "Custom"], index=1,
+    help="Equal locks y/x to 1:1 in data units; Custom sets the y:x ratio.")
+aspect_ratio = 1.0
+if aspect_mode == "Custom":
+    aspect_ratio = dc5.number_input("y:x ratio", value=1.0, min_value=0.05,
+                                    max_value=20.0, step=0.1, format="%.2f")
+# Does the current frame's q_image expose a qr–qz representation?
+_qimg_data = load_qimg(sel["qimg"]) if sel["has_qimg"] else None
+_has_qr = qimage_has_qr(_qimg_data)
+b_axis_mode = dc6.selectbox(
+    "B x-axis", ["qx–qz", "qr–qz"], index=0,
+    help=("qr–qz needs a 'qr' (and optional 'qrimg') key in the q_image npz."
+          if not _has_qr else "Plot against qx or in-plane qr."))
+b_mode = "qr" if b_axis_mode.startswith("qr") else "qx"
+if b_mode == "qr" and not _has_qr:
+    dc6.caption("⚠️ No qr key in this npz yet — showing qx–qz.")
 
 _PANEL_H = 380
-# Colour shown for NaN / no-data pixels (heatmap gaps let the plot bg show).
-_NODATA_BG = "#101010"
 
 
 def _rng(col, label, key, lo_val=None, hi_val=None, fmt="%.4g"):
@@ -346,65 +206,40 @@ with st.expander("🎛️ Ranges & colour scaling (blank = auto)", expanded=Fals
     ap, bp, cp = st.columns(3)
     ap.markdown("**A · raw**")
     a_vmin, a_vmax = _rng(ap, "I", "a_v")
+    a_xr = _rng(ap, "x (px)", "a_x")           # pixel x limits (item 1)
+    a_yr = _rng(ap, "y (px)", "a_y")           # pixel y limits (item 1)
     bp.markdown("**B · q-image**")
     b_vmin, b_vmax = _rng(bp, "I", "b_v")
-    b_qxr = _rng(bp, "qx", "b_qx")
-    b_qzr = _rng(bp, "qz", "b_qz")
+    _bx_lab = "qr" if b_mode == "qr" else "qx"
+    b_qxr = _rng(bp, _bx_lab, "b_qx")
+    b_qzr = _rng(bp, "qz", "b_qz", lo_val=0.0, hi_val=3.0)   # default qz [0,3] (item 4)
     cp.markdown("**C · q–φ**")
     c_vmin, c_vmax = _rng(cp, "I", "c_v")
     c_qr = _rng(cp, "q", "c_q")
-    c_phir = _rng(cp, "φ", "c_phi")
+    c_phir = _rng(cp, "φ", "c_phi", lo_val=0.0, hi_val=180.0)  # default φ [0,180] (item 4)
     st.markdown("**D · circular average**")
     dp1, dp2 = st.columns(2)
     d_qr = _rng(dp1, "q", "d_q")
     d_ir = _rng(dp2, "I", "d_i")
+    st.caption("D curve style")
+    d_style = _curve_style_controls("d_style",
+                                    defaults={"color": "Crimson", "width": 2.2})
 
 
-def _color_limits(z, vmin_I, vmax_I):
-    """Map optional intensity limits into display (log) space; auto = 1/99.5 pct."""
-    finite = z[np.isfinite(z)]
-    if vmin_I is None or vmax_I is None:
-        if finite.size:
-            p_lo, p_hi = np.nanpercentile(finite, [1.0, 99.5])
-        else:
-            p_lo, p_hi = None, None
-        vmin_I = p_lo if vmin_I is None else vmin_I
-        vmax_I = p_hi if vmax_I is None else vmax_I
-    if vmin_I is None or vmax_I is None:
-        return None, None
-    if logI:
-        lo = float(np.log10(max(vmin_I, 1e-6)))
-        hi = float(np.log10(max(vmax_I, 1e-6)))
-        return lo, hi
-    return float(vmin_I), float(vmax_I)
+def _heatmap_fig(title, z, x, y, xlab, ylab, **kw):
+    """Thin wrapper injecting this page's colormap / log toggle / panel height
+    into the shared engine ``heatmap_fig``."""
+    return heatmap_fig(title, z, x, y, xlab, ylab,
+                       cmap=cmap, logI=logI, height=_PANEL_H, **kw)
 
 
-def _heatmap_fig(title, z, x, y, xlab, ylab, xlog=False, shapes=None,
-                 y_reverse=False, vmin_I=None, vmax_I=None,
-                 x_range=None, y_range=None):
-    zz = _log_scale(z) if logI else z
-    zmin, zmax = _color_limits(z, vmin_I, vmax_I)
-    fig = go.Figure(go.Heatmap(
-        z=zz, x=x, y=y, colorscale=cmap, zmin=zmin, zmax=zmax,
-        colorbar=dict(title="log I" if logI else "I"),
-        hovertemplate=f"{xlab}=%{{x:.4g}}<br>{ylab}=%{{y:.4g}}<br>I=%{{z:.3g}}<extra></extra>",
-    ))
-    xr = list(x_range) if x_range and None not in x_range else None
-    fig.update_xaxes(title_text=xlab, type="log" if xlog else "linear", range=xr)
-    if y_range and None not in y_range:
-        yr = list(y_range)
-        if y_reverse:
-            yr = yr[::-1]
-        fig.update_yaxes(title_text=ylab, range=yr)
-    else:
-        fig.update_yaxes(title_text=ylab, autorange="reversed" if y_reverse else True)
-    if shapes:
-        for sh in shapes:
-            fig.add_shape(**sh)
-    fig.update_layout(title=title, height=_PANEL_H, template="plotly_white",
-                      plot_bgcolor=_NODATA_BG,
-                      margin=dict(l=55, r=10, t=40, b=45))
-    return fig
+def _aspect_arg():
+    """Translate the aspect-mode control into the _heatmap_fig ``aspect`` arg."""
+    if aspect_mode == "Equal (1:1)":
+        return "equal"
+    if aspect_mode == "Custom":
+        return aspect_ratio
+    return None
 
 
 # ===========================================================================
@@ -414,16 +249,20 @@ st.divider()
 st.subheader("✂️ Line-cuts")
 
 lc1, lc2, lc3, lc4 = st.columns([1.3, 1.6, 1.3, 1])
-cut_source = lc1.selectbox("Cut on", ["q_image (qx–qz)", "q–φ map"], index=0)
+# The horizontal (in-plane) axis of the q-image follows the B-panel mode.
+_bx = "qr" if b_mode == "qr" else "qx"
+cut_source = lc1.selectbox("Cut on", [f"q_image ({_bx}–qz)", "q–φ map"],
+                           index=1)  # default to q–φ map (item 5)
 
 if cut_source.startswith("q_image"):
     cut_dir = lc2.selectbox(
         "Direction",
-        ["qr-cut  (I vs qr, fixed qz band)", "qz-cut  (I vs qz, fixed qr band)"],
+        [f"{_bx}-cut  (I vs {_bx}, fixed qz band)",
+         f"qz-cut  (I vs qz, fixed {_bx} band)"],
         index=0)
-    _is_qr = cut_dir.startswith("qr")
-    centers_lab = "qz center(s)" if _is_qr else "qr center(s)"
-    width_lab = "qz width" if _is_qr else "qr width"
+    _is_qr = cut_dir.startswith(_bx)
+    centers_lab = "qz center(s)" if _is_qr else f"{_bx} center(s)"
+    width_lab = "qz width" if _is_qr else f"{_bx} width"
     def_centers, def_width = ("0.0", 0.05)
 else:
     cut_dir = lc2.selectbox(
@@ -449,10 +288,10 @@ _line_color = "crimson"
 
 if centers:
     if cut_source.startswith("q_image") and sel["has_qimg"]:
-        qimg, qx, qz, qmask = load_qimg(sel["qimg"])
+        qimg, qx, qz, qmask, _ = resolve_qimage(_qimg_data, b_mode)
         if qimg is not None:
             for c in centers:
-                if _is_qr:   # band in qz → profile along qx (qr)
+                if _is_qr:   # band in qz → profile along in-plane axis (qx/qr)
                     res = _band_profile(qimg, qx, qz, c, width, qmask)
                     if res:
                         cut_curves.append((f"qz={c:g}", res[0], res[1]))
@@ -461,10 +300,10 @@ if centers:
                         x0=float(qx.min()), x1=float(qx.max()),
                         y0=c - width / 2, y1=c + width / 2,
                         fillcolor=_band_color, line=dict(color=_line_color, width=1)))
-                else:        # band in qx (qr) → profile along qz
+                else:        # band in in-plane axis → profile along qz
                     res = _band_profile(qimg, qz, qx, c, width, qmask)
                     if res:
-                        cut_curves.append((f"qr={c:g}", res[0], res[1]))
+                        cut_curves.append((f"{_bx}={c:g}", res[0], res[1]))
                     qimg_shapes.append(dict(
                         type="rect", xref="x", yref="y",
                         y0=float(qz.min()), y1=float(qz.max()),
@@ -499,6 +338,8 @@ if centers:
 # Four panels: A raw · B q-image · C q–φ · D circular average
 # ===========================================================================
 st.divider()
+# Selected frame name as a title over the A–D panels (item 2).
+st.markdown(f"### 🖼️ {sel['stem']}")
 rowA = st.columns(2)
 rowB = st.columns(2)
 
@@ -509,24 +350,34 @@ with rowA[0]:
         z = raw.astype(float).copy()
         z[~np.isfinite(z)] = np.nan
         z[z <= 0] = np.nan                     # negatives / gaps → dark
-        z, xx, yy = _downsample(z, None, None)
-        fig = _heatmap_fig("A · stitched raw", z, None, None,
-                           "x (px)", "y (px)", y_reverse=True,
-                           vmin_I=a_vmin, vmax_I=a_vmax)
+        # Flip vertically so the image reads right-side-up with a lower-left
+        # origin (item 3): detector row 0 is the top, so row 0 must sit at the
+        # top of the plot while y still increases upward.
+        z = np.flipud(z)
+        # Real pixel coordinate axes so the x/y (px) limits are meaningful even
+        # after downsampling (item 1).
+        ny0, nx0 = z.shape
+        px_x, px_y = np.arange(nx0), np.arange(ny0)
+        z, px_x, px_y = _downsample(z, px_x, px_y)
+        # y_reverse=False → origin at lower-left (y increases upward).
+        fig = _heatmap_fig("A · stitched raw", z, px_x, px_y,
+                           "x (px)", "y (px)", y_reverse=False,
+                           vmin_I=a_vmin, vmax_I=a_vmax,
+                           x_range=a_xr, y_range=a_yr, aspect=_aspect_arg())
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("No stitched raw image for this frame.")
 
-# B) q-image (qx–qz) ---------------------------------------------------------
+# B) q-image (qx–qz or qr–qz) ------------------------------------------------
 with rowA[1]:
     if sel["has_qimg"]:
-        qimg, qx, qz, qmask = load_qimg(sel["qimg"])
+        qimg, qx, qz, qmask, b_xlab = resolve_qimage(_qimg_data, b_mode)
         z = _apply_mask(qimg, qmask)
         z, xx, yy = _downsample(z, qx, qz)
         # Overlay shapes are in data coords, so downsampling doesn't affect them.
-        fig = _heatmap_fig("B · q-image", z, xx, yy, "qx (Å⁻¹)", "qz (Å⁻¹)",
+        fig = _heatmap_fig("B · q-image", z, xx, yy, b_xlab, "qz (Å⁻¹)",
                            shapes=qimg_shapes, vmin_I=b_vmin, vmax_I=b_vmax,
-                           x_range=b_qxr, y_range=b_qzr)
+                           x_range=b_qxr, y_range=b_qzr, aspect=_aspect_arg())
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("No q_image for this frame.")
@@ -549,20 +400,14 @@ with rowB[0]:
 with rowB[1]:
     if sel["has_cir"]:
         qq, ii = load_cir(sel["cir"])
-        fig = go.Figure(go.Scatter(
-            x=qq, y=ii, mode="lines", line=dict(width=2.2, color="crimson"),
-            hovertemplate="q=%{x:.4f}<br>I=%{y:.3g}<extra></extra>"))
-        def _axrange(lo, hi, is_log):
-            if lo is None and hi is None:
-                return None
-            if is_log:
-                lo = np.log10(lo) if lo and lo > 0 else None
-                hi = np.log10(hi) if hi and hi > 0 else None
-            return [lo, hi] if lo is not None and hi is not None else None
-        fig.update_xaxes(title_text="q (Å⁻¹)", type="log" if logq else "linear",
-                         range=_axrange(d_qr[0], d_qr[1], logq))
-        fig.update_yaxes(title_text="I(q)", type="log" if logiq else "linear",
-                         range=_axrange(d_ir[0], d_ir[1], logiq))
+        tk = _apply_curve_style(
+            dict(x=qq, y=ii, name="I(q)",
+                 hovertemplate="q=%{x:.4f}<br>I=%{y:.3g}<extra></extra>"),
+            d_style, base_color="crimson")
+        fig = go.Figure(go.Scatter(**tk))
+        fig.update_xaxes(title_text="q (Å⁻¹)", range=_axrange(d_qr[0], d_qr[1], logq))
+        fig.update_yaxes(title_text="I(q)", range=_axrange(d_ir[0], d_ir[1], logiq))
+        _style_1d_axes(fig, logq, logiq)
         fig.update_layout(title="D · circular average", height=_PANEL_H,
                           template="plotly_white", margin=dict(l=60, r=15, t=40, b=45))
         st.plotly_chart(fig, use_container_width=True)
@@ -581,19 +426,36 @@ if centers:
         along_is_q = (cut_source.startswith("q_image") and _is_qr) or \
                      (cut_source.startswith("q–φ") and not _is_qcut)
         if cut_source.startswith("q_image"):
-            xlab = "qr (Å⁻¹)" if _is_qr else "qz (Å⁻¹)"
+            xlab = f"{_bx} (Å⁻¹)" if _is_qr else "qz (Å⁻¹)"
         else:
             xlab = "φ (deg)" if _is_qcut else "q (Å⁻¹)"
         xlog = logq and along_is_q
 
+        # Styling + axis limits for the line-cut profiles (items 4-6).
+        # When the profile runs along φ (q-cut on q–φ), default x to [0,180].
+        _x_is_phi = xlab.startswith("φ")
+        with st.expander("🎛️ Line-cut plot: limits & style", expanded=True):
+            lp1, lp2 = st.columns(2)
+            lc_xr = _rng(lp1, xlab, "lc_x",
+                         lo_val=0.0 if _x_is_phi else None,
+                         hi_val=180.0 if _x_is_phi else None)
+            lc_yr = _rng(lp2, "I", "lc_i")
+            st.caption("Profile curve style (applied to all cuts)")
+            lc_style = _curve_style_controls("lc_style", defaults={"width": 2.0})
+
         import plotly.express as px
-        colors = px.colors.sample_colorscale("Turbo", np.linspace(0, 1, max(1, len(cut_curves))))
+        # Auto colour cycle unless the user picked a specific colour.
+        base_colors = px.colors.sample_colorscale(
+            "Turbo", np.linspace(0, 1, max(1, len(cut_curves))))
         fig = go.Figure()
-        for (name, xa, ya), col in zip(cut_curves, colors):
-            fig.add_trace(go.Scatter(x=xa, y=ya, mode="lines", name=name,
-                                     line=dict(width=2, color=col)))
-        fig.update_xaxes(title_text=xlab, type="log" if xlog else "linear")
-        fig.update_yaxes(title_text="I (band mean)", type="log" if logiq else "linear")
+        for (name, xa, ya), col in zip(cut_curves, base_colors):
+            tk = _apply_curve_style(dict(x=xa, y=ya, name=name),
+                                    lc_style, base_color=col)
+            fig.add_trace(go.Scatter(**tk))
+        fig.update_xaxes(title_text=xlab, range=_axrange(lc_xr[0], lc_xr[1], xlog))
+        fig.update_yaxes(title_text="I (band mean)",
+                         range=_axrange(lc_yr[0], lc_yr[1], logiq))
+        _style_1d_axes(fig, xlog, logiq)
         fig.update_layout(height=420, template="plotly_white",
                           margin=dict(l=60, r=15, t=25, b=50),
                           legend=dict(orientation="h", y=1.05))

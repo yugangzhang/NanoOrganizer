@@ -54,6 +54,12 @@ except Exception:  # pragma: no cover - standalone fallback
         return True
 
 try:
+    from NanoOrganizer.web_app.components.folder_browser import folder_picker
+    _HAVE_BROWSER = True
+except Exception:  # pragma: no cover - standalone fallback
+    _HAVE_BROWSER = False
+
+try:
     from NanoOrganizer.web_app.components.folder_browser import filter_file_list
 except Exception:  # pragma: no cover - standalone fallback
     def filter_file_list(file_list, and_list=[], or_list=[], no_list=[]):
@@ -183,13 +189,21 @@ st.caption("Overlay circular-average I(q) curves — filter by filename, keyword
 # --- Sidebar: data source + filters ---------------------------------------
 with st.sidebar:
     st.header("📁 Data source")
-    folder = st.text_input("cir_avg folder", value=DEFAULT_DIR)
+    if _HAVE_BROWSER:
+        folder = folder_picker(key="saxs1d_folder", label="cir_avg folder",
+                               default=DEFAULT_DIR)
+    else:
+        folder = st.text_input("cir_avg folder", value=DEFAULT_DIR)
+        if _HAVE_SECURITY and folder and not is_path_allowed(
+            folder, allow_nonexistent=True
+        ):
+            st.error("This folder is outside the allowed roots (secure mode).")
+            st.stop()
     recursive = st.checkbox("Search subfolders", value=False)
     if st.button("🔄 Rescan folder"):
         scan_folder.clear()
 
-    if _HAVE_SECURITY and folder and not is_path_allowed(folder, allow_nonexistent=True):
-        st.error("This folder is outside the allowed roots (secure mode).")
+    if not folder:
         st.stop()
 
     df = scan_folder(folder, recursive)

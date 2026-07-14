@@ -22,9 +22,11 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_DIR"
 
 # Beamline data lives behind a symlink that resolves outside $HOME; whitelist
-# its real target so secure mode lets the SAXS explorer read it. Add more
-# paths here (os.pathsep = ':' separated) as needed.
-: "${NANOORGANIZER_EXTRA_ROOTS:=/nsls2/auto-storage/cms/proposals:/nsls2/users/${USER}/cms_proposal_link}"
+# its real target so secure mode lets the SAXS/GIWAXS explorers read it.
+# /mnt/data32/NSLSII_Data is the sshfs mount of the NSLS-II remote data
+# (cms_remote proposals live under it). Add more paths here (os.pathsep = ':'
+# separated) as needed.
+: "${NANOORGANIZER_EXTRA_ROOTS:=/nsls2/auto-storage/cms/proposals:/nsls2/users/${USER}/cms_proposal_link:/mnt/data32/NSLSII_Data}"
 export NANOORGANIZER_EXTRA_ROOTS
 
 # Make the local package importable without a pip install.

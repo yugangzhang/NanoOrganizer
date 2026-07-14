@@ -46,6 +46,12 @@ except Exception:  # pragma: no cover
     def is_path_allowed(path, allow_nonexistent: bool = False):
         return True
 
+try:
+    from NanoOrganizer.web_app.components.folder_browser import folder_picker
+    _HAVE_BROWSER = True
+except Exception:  # pragma: no cover - standalone fallback
+    _HAVE_BROWSER = False
+
 
 DEFAULT_ANALYSIS = (
     "/nsls2/users/yuzhang/cms_proposal_link/2026-2/pass-316987/"
@@ -129,11 +135,21 @@ st.caption("q–φ map beside its circular average, auto-paired by filename.")
 
 with st.sidebar:
     st.header("📁 Analysis folder")
-    analysis = st.text_input("analysis/ dir (has cir_avg/ + qphi/)", value=DEFAULT_ANALYSIS)
+    if _HAVE_BROWSER:
+        analysis = folder_picker(key="saxs2d_analysis",
+                                 label="analysis/ dir (has cir_avg/ + qphi/)",
+                                 default=DEFAULT_ANALYSIS)
+    else:
+        analysis = st.text_input("analysis/ dir (has cir_avg/ + qphi/)",
+                                 value=DEFAULT_ANALYSIS)
+        if _HAVE_SECURITY and analysis and not is_path_allowed(
+            analysis, allow_nonexistent=True
+        ):
+            st.error("Folder outside allowed roots (secure mode).")
+            st.stop()
     if st.button("🔄 Rescan"):
         index_frames.clear()
-    if _HAVE_SECURITY and analysis and not is_path_allowed(analysis, allow_nonexistent=True):
-        st.error("Folder outside allowed roots (secure mode).")
+    if not analysis:
         st.stop()
 
     df = index_frames(analysis)
