@@ -75,13 +75,21 @@ from NanoOrganizer.web_app.components.scattering import (
     style_1d_axes as _style_1d_axes,
 )
 
+# Reached through the ~/NSLSII_Data_Link symlink (-> /mnt/data32/NSLSII_Data).
+# Note the secure-mode check resolves symlinks, so the real mount still has to
+# be an allowed root — see DEFAULT_DATA_ROOTS in app_cli.py.
 DEFAULT_ANALYSIS = (
-    "/mnt/data32/NSLSII_Data/nsls2_romote/cms_remote/2026-2/"
-    "pass-316987/experiments/1_Flow/saxs/analysis"
+    "/home/yuzhang/NSLSII_Data_Link/nsls2_romote/smi_remote/2026-2/pass-317378/"
+    "projects/Digestive_Ripening/Results/tsaxs"
 )
 
-# The raw image is a sibling of analysis/ for transmission data.
+# Where the 2D raw image lives *relative to the analysis dir*. CMS transmission
+# data keeps it in a sibling ``raw/``; SMI stores it per detector under
+# ``user_data/`` (e.g. ``../../user_data/2M`` for SAXS2M), so it is editable in
+# the sidebar rather than fixed.
 RAW_SUBDIR = "../raw"
+RAW_SUBDIR_CHOICES = ["../raw", "../../user_data/2M", "../../user_data/900KW",
+                      "stitched"]
 
 
 # ===========================================================================
@@ -110,12 +118,18 @@ with st.sidebar:
             st.error("Folder outside allowed roots (secure mode).")
             st.stop()
 
+    raw_subdir = st.selectbox(
+        "Raw image folder (relative to analysis/)", RAW_SUBDIR_CHOICES, index=0,
+        accept_new_options=True,
+        help="CMS: ../raw · SMI: ../../user_data/<detector>. Type any other "
+             "relative path if your layout differs.")
+
     if st.button("🔄 Rescan"):
         index_frames.clear()
     if not analysis:
         st.stop()
 
-    df = index_frames(analysis, raw_subdir=RAW_SUBDIR)
+    df = index_frames(analysis, raw_subdir=raw_subdir or RAW_SUBDIR)
     if df.empty:
         st.warning("No raw/ qphi/ or cir_avg/ files found for this folder.")
         st.stop()

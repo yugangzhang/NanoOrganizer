@@ -78,9 +78,12 @@ except Exception:  # pragma: no cover - standalone fallback
         return out
 
 
+# The mount itself (not the ~/NSLSII_Data_Link symlink): secure mode resolves
+# symlinks anyway, so both spellings need /mnt/data32/NSLSII_Data to be an
+# allowed root — see DEFAULT_DATA_ROOTS in app_cli.py.
 DEFAULT_DIR = (
-    "/nsls2/users/yuzhang/cms_proposal_link/2026-2/pass-316987/"
-    "experiments/1_Flow/saxs/analysis/cir_avg"
+    "/mnt/data32/NSLSII_Data/nsls2_romote/smi_remote/2026-2/pass-317378/"
+    "projects/Digestive_Ripening/Results/tsaxs/cir_avg"
 )
 
 # ---------------------------------------------------------------------------
@@ -100,7 +103,7 @@ def parse_name(fname: str) -> dict:
     for pref in ("Cir_Avg_",):
         if stem.startswith(pref):
             stem = stem[len(pref):]
-    stem = re.sub(r"\.tiff\.csv$|\.csv$", "", stem)
+    stem = re.sub(r"\.tiff?\.csv$|\.csv$", "", stem)   # CMS .tiff / SMI .tif
 
     ts = None
     m = _TS_RE.search(name)
@@ -132,7 +135,7 @@ def parse_name(fname: str) -> dict:
     elif m := _TS_RE.search(stem):
         sample = stem[:m.start()].rstrip("_")
 
-    is_cal = bool(re.match(r"(AgBH|DirBeam|Empty|glassy|GC)", stem, re.I))
+    is_cal = bool(re.match(r"_*(AgBH|DirBeam|Empty|glassy|GC)", stem, re.I))
 
     return dict(
         file=fname, name=name, label=stem, sample=sample, well=well,

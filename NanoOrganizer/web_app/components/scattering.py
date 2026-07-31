@@ -104,8 +104,9 @@ def stem_of(fname: str) -> str:
         if s.startswith(pref):
             s = s[len(pref):]
     # Peel trailing extensions repeatedly (e.g. ".tiff.npz" → ".tiff" → "").
+    # ``tif`` covers SMI, whose products are named ``<name>.tif.{csv,npz}``.
     while True:
-        new = re.sub(r"\.(npz|csv|png|tiff)$", "", s)
+        new = re.sub(r"\.(npz|csv|png|tiff|tif)$", "", s)
         if new == s:
             return s
         s = new
@@ -131,7 +132,9 @@ def parse_meta(stem: str) -> dict:
     m = _WELL_RE.search(stem)
     if m:
         well = m.group(1)
-    is_cal = bool(re.match(r"(AgBH|DirBeam|Empty|glassy|GC)", stem, re.I))
+    # Leading "_" happens on SMI (e.g. "_AgBH_x00.00_..."); skip it so the
+    # calibration filter still catches those frames.
+    is_cal = bool(re.match(r"_*(AgBH|DirBeam|Empty|glassy|GC)", stem, re.I))
     return dict(timestamp=ts, th=th, scan=scan, well=well, is_calibration=is_cal)
 
 
@@ -151,14 +154,16 @@ def index_frames(analysis_dir: str, raw_subdir: str = "stitched") -> pd.DataFram
     base = Path(analysis_dir)
     raw_dir = (base / raw_subdir).resolve()
     dirs = {
-        "raw": (raw_dir, "*.tiff"),
-        "qimg": (base / "q_image", "*.npz"),
-        "qphi": (base / "qphi", "*.npz"),
-        "cir": (base / "cir_avg", "*.csv"),
+        # SMI writes raw frames as ``.tif``, CMS as ``.tiff`` — accept both.
+        "raw": (raw_dir, ("*.tiff", "*.tif")),
+        "qimg": (base / "q_image", ("*.npz",)),
+        "qphi": (base / "qphi", ("*.npz",)),
+        "cir": (base / "cir_avg", ("*.csv",)),
     }
     maps = {}
-    for key, (d, pat) in dirs.items():
-        maps[key] = ({stem_of(p.name): str(p) for p in d.glob(pat)}
+    for key, (d, pats) in dirs.items():
+        maps[key] = ({stem_of(p.name): str(p)
+                      for pat in pats for p in d.glob(pat)}
                      if d.is_dir() else {})
     stems = sorted(set().union(*[set(m) for m in maps.values()])) if maps else []
     rows = []
