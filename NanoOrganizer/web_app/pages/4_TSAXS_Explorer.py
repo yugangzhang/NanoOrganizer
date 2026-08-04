@@ -62,6 +62,24 @@ try:
 except Exception:  # pragma: no cover - standalone fallback
     _HAVE_BROWSER = False
 
+# On-beamline (/nsls2) vs off-beamline (sshfs mount) data roots.
+try:
+    from NanoOrganizer.web_app.components.data_roots import (
+        site_toggle, apply_site, follow_site,
+    )
+    _HAVE_SITES = True
+except Exception:  # pragma: no cover - standalone fallback
+    _HAVE_SITES = False
+
+    def site_toggle(key, beamline="smi", **kw):
+        return "offsite", beamline
+
+    def apply_site(path, site, beamline="smi"):
+        return path
+
+    def follow_site(picker_key, site, beamline="smi"):
+        return None
+
 # Shared scattering engine (aliased to the underscore names used below).
 from NanoOrganizer.web_app.components.scattering import (
     CMAPS, index_frames, load_raw, load_qphi, load_cir, heatmap_fig,
@@ -75,9 +93,11 @@ from NanoOrganizer.web_app.components.scattering import (
     style_1d_axes as _style_1d_axes,
 )
 
-# Reached through the ~/NSLSII_Data_Link symlink (-> /mnt/data32/NSLSII_Data).
-# Note the secure-mode check resolves symlinks, so the real mount still has to
-# be an allowed root — see DEFAULT_DATA_ROOTS in app_cli.py.
+# Written in the off-beamline spelling (reached through the ~/NSLSII_Data_Link
+# symlink -> /mnt/data32/NSLSII_Data); the "Data location" toggle rewrites it to
+# /nsls2/data1/... when running at the beamline. Note the secure-mode check
+# resolves symlinks, so the real mount still has to be an allowed root — see
+# DEFAULT_DATA_ROOTS in app_cli.py.
 DEFAULT_ANALYSIS = (
     "/home/yuzhang/NSLSII_Data_Link/nsls2_romote/smi_remote/2026-2/pass-317378/"
     "projects/Digestive_Ripening/Results/tsaxs"
@@ -102,16 +122,20 @@ st.caption("Raw image · q-image · q–φ map · I(q) — with q–φ line-cuts
 
 with st.sidebar:
     st.header("📁 Analysis folder")
+    site, beamline = site_toggle("tsaxs", beamline="smi")
+    follow_site("tsaxs_analysis", site, beamline)
+    default_analysis = apply_site(DEFAULT_ANALYSIS, site, beamline)
+
     if _HAVE_BROWSER:
         analysis = folder_picker(
             key="tsaxs_analysis",
             label="analysis/ dir (has qphi/ cir_avg/; raw/ is a sibling)",
-            default=DEFAULT_ANALYSIS,
+            default=default_analysis,
         )
     else:
         analysis = st.text_input(
             "analysis/ dir (has qphi/ cir_avg/; raw/ is a sibling)",
-            value=DEFAULT_ANALYSIS)
+            value=default_analysis)
         if _HAVE_SECURITY and analysis and not is_path_allowed(
             analysis, allow_nonexistent=True
         ):

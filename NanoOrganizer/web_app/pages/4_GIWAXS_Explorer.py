@@ -69,6 +69,21 @@ try:
 except Exception:  # pragma: no cover - standalone fallback
     _HAVE_BROWSER = False
 
+# On-beamline (/nsls2) vs off-beamline (sshfs mount) data roots.
+try:
+    from NanoOrganizer.web_app.components.data_roots import (
+        site_toggle, apply_site, follow_site,
+    )
+except Exception:  # pragma: no cover - standalone fallback
+    def site_toggle(key, beamline="smi", **kw):
+        return "offsite", beamline
+
+    def apply_site(path, site, beamline="smi"):
+        return path
+
+    def follow_site(picker_key, site, beamline="smi"):
+        return None
+
 # Shared scattering engine — indexing, loaders, array/plot helpers, styling.
 # Some are aliased to the underscore names this page's body already uses.
 from NanoOrganizer.web_app.components.scattering import (
@@ -104,6 +119,9 @@ st.caption("Raw image · q-image · q–φ map · circular average — with q-im
 
 with st.sidebar:
     st.header("📁 Analysis folder")
+    site, beamline = site_toggle("giwaxs", beamline="cms")
+    follow_site("giwaxs_analysis", site, beamline)
+    DEFAULT_ANALYSIS = apply_site(DEFAULT_ANALYSIS, site, beamline)
 
     if _HAVE_BROWSER:
         analysis = folder_picker(

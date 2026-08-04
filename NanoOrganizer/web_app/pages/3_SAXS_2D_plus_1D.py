@@ -52,6 +52,21 @@ try:
 except Exception:  # pragma: no cover - standalone fallback
     _HAVE_BROWSER = False
 
+# On-beamline (/nsls2) vs off-beamline (sshfs mount) data roots.
+try:
+    from NanoOrganizer.web_app.components.data_roots import (
+        site_toggle, apply_site, follow_site,
+    )
+except Exception:  # pragma: no cover - standalone fallback
+    def site_toggle(key, beamline="smi", **kw):
+        return "offsite", beamline
+
+    def apply_site(path, site, beamline="smi"):
+        return path
+
+    def follow_site(picker_key, site, beamline="smi"):
+        return None
+
 
 DEFAULT_ANALYSIS = (
     "/nsls2/users/yuzhang/cms_proposal_link/2026-2/pass-316987/"
@@ -135,6 +150,10 @@ st.caption("q–φ map beside its circular average, auto-paired by filename.")
 
 with st.sidebar:
     st.header("📁 Analysis folder")
+    site, beamline = site_toggle("saxs2d", beamline="cms")
+    follow_site("saxs2d_analysis", site, beamline)
+    DEFAULT_ANALYSIS = apply_site(DEFAULT_ANALYSIS, site, beamline)
+
     if _HAVE_BROWSER:
         analysis = folder_picker(key="saxs2d_analysis",
                                  label="analysis/ dir (has cir_avg/ + qphi/)",

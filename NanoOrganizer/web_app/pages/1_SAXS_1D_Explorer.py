@@ -59,6 +59,21 @@ try:
 except Exception:  # pragma: no cover - standalone fallback
     _HAVE_BROWSER = False
 
+# On-beamline (/nsls2) vs off-beamline (sshfs mount) data roots.
+try:
+    from NanoOrganizer.web_app.components.data_roots import (
+        site_toggle, apply_site, follow_site,
+    )
+except Exception:  # pragma: no cover - standalone fallback
+    def site_toggle(key, beamline="smi", **kw):
+        return "offsite", beamline
+
+    def apply_site(path, site, beamline="smi"):
+        return path
+
+    def follow_site(picker_key, site, beamline="smi"):
+        return None
+
 try:
     from NanoOrganizer.web_app.components.folder_browser import filter_file_list
 except Exception:  # pragma: no cover - standalone fallback
@@ -192,6 +207,10 @@ st.caption("Overlay circular-average I(q) curves — filter by filename, keyword
 # --- Sidebar: data source + filters ---------------------------------------
 with st.sidebar:
     st.header("📁 Data source")
+    site, beamline = site_toggle("saxs1d", beamline="smi")
+    follow_site("saxs1d_folder", site, beamline)
+    DEFAULT_DIR = apply_site(DEFAULT_DIR, site, beamline)
+
     if _HAVE_BROWSER:
         folder = folder_picker(key="saxs1d_folder", label="cir_avg folder",
                                default=DEFAULT_DIR)

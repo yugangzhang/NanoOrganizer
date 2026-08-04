@@ -27,6 +27,8 @@ DEFAULT_DATA_ROOTS = (
     "/mnt/data32/NSLSII_Data",              # sshfs mount of the NSLS-II data
     "/nsls2/auto-storage/cms/proposals",    # on-site CMS storage
     "/nsls2/data",                          # on-site beamline proposals
+    "/nsls2/data1",                         # on-site beamline proposals (data1)
+    "/nsls2/users",                         # on-site home/proposal symlinks
 )
 
 
