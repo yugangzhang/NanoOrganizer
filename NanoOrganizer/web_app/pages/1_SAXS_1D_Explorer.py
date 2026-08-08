@@ -92,6 +92,12 @@ except Exception:  # pragma: no cover - standalone fallback
                 out.append(f)
         return out
 
+try:
+    from NanoOrganizer.web_app.components.scattering import discover_scattering_products
+except Exception:  # pragma: no cover - standalone fallback
+    def discover_scattering_products(path):
+        return str(Path(path)), [], None
+
 
 # The mount itself (not the ~/NSLSII_Data_Link symlink): secure mode resolves
 # symlinks anyway, so both spellings need /mnt/data32/NSLSII_Data to be an
@@ -212,10 +218,13 @@ with st.sidebar:
     DEFAULT_DIR = apply_site(DEFAULT_DIR, site, beamline)
 
     if _HAVE_BROWSER:
-        folder = folder_picker(key="saxs1d_folder", label="cir_avg folder",
+        folder = folder_picker(
+            key="saxs1d_folder",
+            label="Data path (cir_avg/ or scattering root)",
                                default=DEFAULT_DIR)
     else:
-        folder = st.text_input("cir_avg folder", value=DEFAULT_DIR)
+        folder = st.text_input(
+            "Data path (cir_avg/ or scattering root)", value=DEFAULT_DIR)
         if _HAVE_SECURITY and folder and not is_path_allowed(
             folder, allow_nonexistent=True
         ):
@@ -226,6 +235,22 @@ with st.sidebar:
         scan_folder.clear()
 
     if not folder:
+        st.stop()
+
+    # Accept the same root/product-path convention as the other scattering
+    # explorers.  A root containing cir_avg/ automatically routes this page to
+    # that product; a pasted q_image/ path remains a useful explicit error.
+    _folder_root, _products, _focused = discover_scattering_products(folder)
+    if _focused != "cir_avg":
+        _cir_product = next(
+            (item for item in _products if item["key"] == "cir_avg"), None
+        )
+        if _cir_product:
+            folder = _cir_product["folder"]
+    if _HAVE_SECURITY and folder and not is_path_allowed(
+        folder, allow_nonexistent=True
+    ):
+        st.error("This circular-average folder is outside the allowed roots.")
         st.stop()
 
     df = scan_folder(folder, recursive)

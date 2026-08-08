@@ -28,6 +28,7 @@ from NanoOrganizer.core.beamline_paths import (
     BEAMLINES, SITE_KEYS, dataset_path, detect_site, resolve_site, site_label,
     site_root, split_dataset_path, swap_site,
 )
+from NanoOrganizer.core.access_config import configured_beamline, configured_site
 
 __all__ = ["site_toggle", "apply_site", "follow_site", "dataset_path_picker"]
 
@@ -52,16 +53,27 @@ def site_toggle(key: str, beamline: str = "smi", show_beamline: bool = True,
     expanded : bool  Start the expander open.
     """
     with st.expander("🛰️ Data location", expanded=expanded):
+        configured = configured_site()
+        configured_choice = _AUTO
+        if configured in _LABEL_TO_KEY.values():
+            configured_choice = next(
+                label for label, key in _LABEL_TO_KEY.items() if key == configured
+            )
+        choice_index = _OPTIONS.index(configured_choice)
         choice = st.radio(
-            "Where is this running?", _OPTIONS, index=0,
+            "Where is this running?", _OPTIONS, index=choice_index,
             key=f"{key}_site_choice", horizontal=True,
             help="Auto picks whichever data tree is actually mounted here. "
-                 "Pin it with $NANOORGANIZER_SITE if both are visible.")
+                 "Pin it with $NANOORGANIZER_SITE or pyViz.conf if both are visible.")
 
         bl = beamline
         if show_beamline:
             options = list(BEAMLINES)
-            idx = options.index(beamline) if beamline in options else 0
+            configured_bl = configured_beamline()
+            selected_bl = beamline
+            if beamline == "smi" and configured_bl in options:
+                selected_bl = configured_bl
+            idx = options.index(selected_bl) if selected_bl in options else 0
             bl = st.selectbox("Beamline", options, index=idx,
                               key=f"{key}_beamline",
                               format_func=str.upper)

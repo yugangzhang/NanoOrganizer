@@ -38,6 +38,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from NanoOrganizer.core.access_config import (
+    configured_path_templates,
+    configured_site,
+    normalize_site,
+)
+
 __all__ = [
     "SITES", "SITE_KEYS", "BEAMLINES",
     "site_label", "site_root", "detect_site", "resolve_site",
@@ -78,6 +84,7 @@ SITES = {
         "hint": "Lab machine reading the mounted copy of the beamline data.",
         "roots": [
             "/mnt/data32/NSLSII_Data/nsls2_romote/{bl}_remote",
+            "~/NSLS_II_Link/{bl}_remote",
             "~/NSLSII_Data_Link/nsls2_romote/{bl}_remote",
         ],
     },
@@ -89,7 +96,8 @@ SITE_KEYS = ("onsite", "offsite")
 
 def site_label(site: str) -> str:
     """Human-readable name for a site key (falls back to the key itself)."""
-    return SITES.get(site, {}).get("label", str(site))
+    normalized = normalize_site(site, "")
+    return SITES.get(normalized, {}).get("label", str(site))
 
 
 def candidate_roots(site: str, beamline: str = "smi"):
@@ -98,6 +106,7 @@ def candidate_roots(site: str, beamline: str = "smi"):
     Returns ``Path`` objects with ``~`` expanded. Existence is *not* checked —
     use :func:`site_root` for that.
     """
+    site = normalize_site(site, "")
     if site not in SITES:
         raise ValueError(
             f"Unknown site {site!r}; expected one of {list(SITES)}.")
@@ -105,7 +114,8 @@ def candidate_roots(site: str, beamline: str = "smi"):
 
     override = os.environ.get(
         ENV_ONSITE_ROOT if site == "onsite" else ENV_OFFSITE_ROOT, "").strip()
-    templates = ([override] if override else []) + list(SITES[site]["roots"])
+    configured = list(configured_path_templates(site, bl))
+    templates = ([override] if override else []) + configured + list(SITES[site]["roots"])
     return [Path(t.format(bl=bl)).expanduser() for t in templates]
 
 
@@ -129,9 +139,12 @@ def detect_site(beamline: str = "smi"):
     Honours ``$NANOORGANIZER_SITE`` first. Returns a site key, or ``None`` when
     neither tree is visible (a caller can then fall back to plain browsing).
     """
-    pinned = os.environ.get(ENV_SITE, "").strip().lower()
+    pinned = normalize_site(os.environ.get(ENV_SITE, ""), "")
     if pinned in SITES:
         return pinned
+    configured = configured_site()
+    if configured in SITES:
+        return configured
     for site in SITE_KEYS:
         if site_root(site, beamline, must_exist=True) is not None:
             return site
@@ -145,6 +158,8 @@ def resolve_site(site: str = "auto", beamline: str = "smi") -> str:
     spelling a lab machine would eventually use.
     """
     site = (site or "auto").strip().lower()
+    if site != "auto":
+        site = normalize_site(site, "")
     if site == "auto":
         return detect_site(beamline) or "offsite"
     if site not in SITES:

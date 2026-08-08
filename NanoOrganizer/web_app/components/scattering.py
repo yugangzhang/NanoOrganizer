@@ -39,6 +39,35 @@ CMAPS = ["Turbo", "Viridis", "Inferno", "Magma", "Plasma", "Cividis",
          "Jet", "Hot", "Rainbow", "Portland", "Electric", "Blackbody",
          "Thermal", "Ice", "Spectral"]
 
+# Reduction products are deliberately described as data, not as a fixed page
+# layout.  The explorer can therefore show a new reduction folder (for
+# example ``qc``) without making every page assume that every other product is
+# present too.
+SCATTERING_PRODUCTS = {
+    "stitched": {
+        "label": "Raw / stitched image",
+        "patterns": ("*.tif", "*.tiff", "*.png", "*.jpg", "*.jpeg"),
+    },
+    "qc": {
+        "label": "QC image",
+        "patterns": ("*.png", "*.jpg", "*.jpeg", "*.tif", "*.tiff"),
+    },
+    "q_image": {
+        "label": "q-image",
+        "patterns": ("*.npz",),
+    },
+    "qphi": {
+        "label": "q–φ map",
+        "patterns": ("*.npz",),
+    },
+    "cir_avg": {
+        "label": "Circular average I(q)",
+        "patterns": ("*.csv",),
+    },
+}
+
+SCATTERING_PANEL_ORDER = tuple(SCATTERING_PRODUCTS)
+
 # ---------------------------------------------------------------------------
 # Template registry — maps a data-type folder (saxs/waxs/maxs) to the viz
 # template best suited to it. A CMS proposal's experiments/<sample>/ folder
@@ -81,6 +110,109 @@ def detect_datatype(path: str):
         if key in parts:
             return key
     return None
+
+
+def _product_file_count(folder: Path, patterns):
+    """Count matching files below one reduction product folder."""
+    found = set()
+    for pattern in patterns:
+        try:
+            found.update(p for p in folder.rglob(pattern) if p.is_file())
+        except (OSError, ValueError):
+            continue
+    return len(found)
+
+
+def discover_scattering_products(path: str):
+    """Discover reduction products below a user-supplied data path.
+
+    Parameters
+    ----------
+    path : str
+        Either the product root (for example ``.../Results/giwaxs``) or one
+        product folder (for example ``.../giwaxs/q_image``).
+
+    Returns
+    -------
+    tuple
+        ``(root, products, focused_product)``. ``root`` is the normalized
+        product root. ``products`` is a list of dictionaries containing
+        ``key``, ``label``, ``folder``, ``count``, and ``patterns``. When the
+        input itself is a recognized product folder, only that product is
+        returned and ``focused_product`` contains its key.
+
+    The function is intentionally UI-free so it can also be used by a future
+    public/local package and tested without a Streamlit runtime.
+    """
+    candidate = Path(path).expanduser()
+    if candidate.is_file():
+        candidate = candidate.parent
+    candidate = candidate.resolve(strict=False)
+    focused = candidate.name if candidate.name in SCATTERING_PRODUCTS else None
+    root = candidate.parent if focused else candidate
+
+    products = []
+    for key in SCATTERING_PANEL_ORDER:
+        if focused and key != focused:
+            continue
+        folder = root / key
+        if not folder.is_dir():
+            continue
+        spec = SCATTERING_PRODUCTS[key]
+        products.append({
+            "key": key,
+            "label": spec["label"],
+            "folder": str(folder),
+            "count": _product_file_count(folder, spec["patterns"]),
+            "patterns": spec["patterns"],
+        })
+    return str(root), products, focused
+
+
+def scattering_product_selector(key: str, path: str):
+    """Render the shared scattering-product chooser in a sidebar.
+
+    The returned product keys are the panels the caller should render. All
+    discovered products start selected; users can uncheck any panel before
+    the frame is loaded. A path ending in a known product folder focuses the
+    chooser on that product, which makes pasting ``.../q_image`` useful for a
+    quick count/inspection.
+    """
+    root, products, focused = discover_scattering_products(path)
+    if not path or not Path(path).expanduser().is_dir():
+        return root, products, []
+
+    if focused:
+        st.caption(f"Focused product: **{focused}**")
+    if not products:
+        st.warning("No recognized scattering product folders were found here.")
+        return root, products, []
+
+    # A new path should start with all products selected; otherwise Streamlit
+    # would reuse the previous root's checkbox state (for example a previously
+    # hidden qphi panel) even though the user pasted a different dataset.
+    path_state_key = f"{key}_path_last"
+    normalized_input = str(Path(path).expanduser().resolve(strict=False))
+    if st.session_state.get(path_state_key) != normalized_input:
+        for product in products:
+            st.session_state.pop(f"{key}_{product['key']}", None)
+        st.session_state[path_state_key] = normalized_input
+
+    st.markdown("**Products to display**")
+    selected = []
+    columns = st.columns(min(3, len(products)))
+    for i, product in enumerate(products):
+        with columns[i % len(columns)]:
+            checked = st.checkbox(
+                f"{product['label']} ({product['count']:,})",
+                value=True,
+                key=f"{key}_{product['key']}",
+                help=product["folder"],
+            )
+        if checked:
+            selected.append(product["key"])
+
+    return root, products, selected
 
 
 _TS_RE = re.compile(r"(\d{4})_(\d{2})_(\d{2})_(\d{2})_(\d{2})_(\d{2})")
@@ -139,7 +271,8 @@ def parse_meta(stem: str) -> dict:
 
 
 @st.cache_data(show_spinner=False)
-def index_frames(analysis_dir: str, raw_subdir: str = "stitched") -> pd.DataFrame:
+def index_frames(analysis_dir: str, raw_subdir: str = "stitched",
+                 product_keys=None) -> pd.DataFrame:
     """Index every reduced frame under an ``analysis/`` folder.
 
     ``raw_subdir`` locates the 2D raw image relative to ``analysis_dir``:
@@ -147,6 +280,11 @@ def index_frames(analysis_dir: str, raw_subdir: str = "stitched") -> pd.DataFram
     * ``"stitched"`` (GIWAXS): ``analysis/stitched/<name>.tiff``.
     * ``"../raw"`` (transmission SAXS/WAXS): the sibling ``raw/`` folder, whose
       files carry no reduction prefix.
+
+    ``product_keys`` optionally limits indexing to the products selected by
+    the sidebar. This is important when a user pastes a single product folder:
+    the parent path is used for frame-name matching, but unselected sibling
+    products must not be scanned.
 
     Returns one row per unique ``<name>`` stem with the resolved paths and
     ``has_*`` availability flags for each product.
@@ -156,12 +294,27 @@ def index_frames(analysis_dir: str, raw_subdir: str = "stitched") -> pd.DataFram
     dirs = {
         # SMI writes raw frames as ``.tif``, CMS as ``.tiff`` — accept both.
         "raw": (raw_dir, ("*.tiff", "*.tif")),
+        "qc": (base / "qc", ("*.png", "*.jpg", "*.jpeg", "*.tiff", "*.tif")),
         "qimg": (base / "q_image", ("*.npz",)),
         "qphi": (base / "qphi", ("*.npz",)),
         "cir": (base / "cir_avg", ("*.csv",)),
     }
+    if product_keys is not None:
+        selected = set(product_keys)
+        dirs = {
+            name: value for name, value in dirs.items()
+            if name == "raw" and "stitched" in selected
+            or name == "qc" and "qc" in selected
+            or name == "qimg" and "q_image" in selected
+            or name == "qphi" and "qphi" in selected
+            or name == "cir" and "cir_avg" in selected
+        }
     maps = {}
-    for key, (d, pats) in dirs.items():
+    for key in ("raw", "qc", "qimg", "qphi", "cir"):
+        if key not in dirs:
+            maps[key] = {}
+            continue
+        d, pats = dirs[key]
         maps[key] = ({stem_of(p.name): str(p)
                       for pat in pats for p in d.glob(pat)}
                      if d.is_dir() else {})
@@ -172,9 +325,11 @@ def index_frames(analysis_dir: str, raw_subdir: str = "stitched") -> pd.DataFram
         rows.append(dict(
             stem=s, label=s,
             raw=maps["raw"].get(s), qimg=maps["qimg"].get(s),
-            qphi=maps["qphi"].get(s), cir=maps["cir"].get(s),
+            qc=maps["qc"].get(s), qphi=maps["qphi"].get(s),
+            cir=maps["cir"].get(s),
             has_raw=s in maps["raw"], has_qimg=s in maps["qimg"],
-            has_qphi=s in maps["qphi"], has_cir=s in maps["cir"], **meta,
+            has_qc=s in maps["qc"], has_qphi=s in maps["qphi"],
+            has_cir=s in maps["cir"], **meta,
         ))
     df = pd.DataFrame(rows)
     if not df.empty:

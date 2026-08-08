@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GIWAXS / GISAXS Explorer — four panels per frame, plus interactive line-cuts.
+"""GIWAXS / GISAXS Explorer — selectable reduction panels per frame.
 
 Point it at a MAXS/GIWAXS ``analysis/`` folder (the CMS auto-reduction output)
 that contains, per reduced frame:
@@ -11,9 +11,11 @@ that contains, per reduced frame:
   ``qphi (nphi, nq)``, ``qphi_mask`` — the q–φ caking map (C).
 * ``cir_avg/Cir_Avg_<name>.tiff.csv`` → columns ``q_ca, iq_ca`` — the circular
   average (D).
+* ``qc/qc_<name>.png``                 → an optional quality-control image.
 
-Pick a frame (by filename / keyword / time) and the page shows all four panels
-at once. You can also take **line-cuts**:
+Paste either the product root or one product folder. The sidebar discovers the
+available products, reports their file counts, and lets the user choose which
+panels to render. You can also take **line-cuts**:
 
 * on the **q_image** — a *qr-cut* (I vs qr at a fixed qz band) or a *qz-cut*
   (I vs qz at a fixed qr band),
@@ -84,6 +86,12 @@ except Exception:  # pragma: no cover - standalone fallback
     def follow_site(picker_key, site, beamline="smi"):
         return None
 
+try:
+    from NanoOrganizer.web_app.components.scattering import scattering_product_selector
+except Exception:  # pragma: no cover - standalone fallback
+    def scattering_product_selector(key, path):
+        return path, [], []
+
 # Shared scattering engine — indexing, loaders, array/plot helpers, styling.
 # Some are aliased to the underscore names this page's body already uses.
 from NanoOrganizer.web_app.components.scattering import (
@@ -101,8 +109,8 @@ from NanoOrganizer.web_app.components.scattering import (
 
 
 DEFAULT_ANALYSIS = (
-    "/home/yuzhang/NSLSII_Data_Link/nsls2_romote/cms_remote/2026-2/"
-    "pass-320306/experiments/0_Static/maxs/analysis"
+    "/home/yuzhang/NSLS_II_Link/smi_remote/2026-2/pass-319371/"
+    "projects/microbeam_Kim/Results/giwaxs"
 )
 
 
@@ -113,25 +121,25 @@ st.set_page_config(page_title="GIWAXS Explorer", page_icon="🧭", layout="wide"
 initialize_security_context()
 require_authentication()
 
-st.title("🧭 GIWAXS / GISAXS Explorer")
-st.caption("Raw image · q-image · q–φ map · circular average — with q-image / "
-           "q–φ line-cuts (qr, qz, q, φ).")
+st.title("🧭 GISAXS / GIWAXS Explorer")
+st.caption("Choose the reduction products to display — raw, QC, q-image, "
+           "q–φ, or circular-average — with q-image / q–φ line-cuts.")
 
 with st.sidebar:
-    st.header("📁 Analysis folder")
-    site, beamline = site_toggle("giwaxs", beamline="cms")
+    st.header("📁 GISAXS / GIWAXS data")
+    site, beamline = site_toggle("giwaxs", beamline="smi")
     follow_site("giwaxs_analysis", site, beamline)
     DEFAULT_ANALYSIS = apply_site(DEFAULT_ANALYSIS, site, beamline)
 
     if _HAVE_BROWSER:
         analysis = folder_picker(
             key="giwaxs_analysis",
-            label="analysis/ dir (has stitched/ q_image/ qphi/ cir_avg/)",
+            label="Data path (giwaxs/ or one product folder)",
             default=DEFAULT_ANALYSIS,
         )
     else:
         analysis = st.text_input(
-            "analysis/ dir (has stitched/ q_image/ qphi/ cir_avg/)",
+            "Data path (giwaxs/ or one product folder)",
             value=DEFAULT_ANALYSIS)
         if _HAVE_SECURITY and analysis and not is_path_allowed(
             analysis, allow_nonexistent=True
@@ -139,18 +147,24 @@ with st.sidebar:
             st.error("Folder outside allowed roots (secure mode).")
             st.stop()
 
+    analysis_root, products, selected_products = scattering_product_selector(
+        "giwaxs_products", analysis
+    )
     if st.button("🔄 Rescan"):
         index_frames.clear()
-    if not analysis:
+    if not analysis or not selected_products:
+        if analysis and products:
+            st.warning("Select at least one product panel to continue.")
         st.stop()
 
-    df = index_frames(analysis)
+    df = index_frames(analysis_root, product_keys=selected_products)
     if df.empty:
-        st.warning("No stitched/ q_image/ qphi/ or cir_avg/ files found here.")
+        st.warning("No frame files found in the selected scattering products.")
         st.stop()
     st.success(
         f"{len(df)} frames — "
-        f"{int(df['has_raw'].sum())} raw · {int(df['has_qimg'].sum())} q-img · "
+        f"{int(df['has_raw'].sum())} raw · {int(df['has_qc'].sum())} QC · "
+        f"{int(df['has_qimg'].sum())} q-img · "
         f"{int(df['has_qphi'].sum())} q–φ · {int(df['has_cir'].sum())} 1D.")
 
     hide_cal = st.checkbox("Hide calibration", value=True)
@@ -169,6 +183,7 @@ if work.empty:
     st.stop()
 
 # --- Frame picker -----------------------------------------------------------
+active_products = set(selected_products)
 c1, c2 = st.columns([4, 1])
 labels = work["stem"].tolist()
 chosen = c1.selectbox("Frame", options=labels, index=0) if len(labels) > 1 else labels[0]
@@ -197,7 +212,10 @@ if aspect_mode == "Custom":
     aspect_ratio = dc5.number_input("y:x ratio", value=1.0, min_value=0.05,
                                     max_value=20.0, step=0.1, format="%.2f")
 # Does the current frame's q_image expose a qr–qz representation?
-_qimg_data = load_qimg(sel["qimg"]) if sel["has_qimg"] else None
+_qimg_data = (
+    load_qimg(sel["qimg"])
+    if "q_image" in active_products and sel["has_qimg"] else None
+)
 _has_qr = qimage_has_qr(_qimg_data)
 b_axis_mode = dc6.selectbox(
     "B x-axis", ["qx–qz", "qr–qz"], index=0,
@@ -264,39 +282,53 @@ def _aspect_arg():
 # Line-cut controls (built first so we can overlay bands on the panels below)
 # ===========================================================================
 st.divider()
-st.subheader("✂️ Line-cuts")
-
-lc1, lc2, lc3, lc4 = st.columns([1.3, 1.6, 1.3, 1])
+cut_source = ""
+centers = []
+_is_qr = False
+_is_qcut = False
 # The horizontal (in-plane) axis of the q-image follows the B-panel mode.
 _bx = "qr" if b_mode == "qr" else "qx"
-cut_source = lc1.selectbox("Cut on", [f"q_image ({_bx}–qz)", "q–φ map"],
-                           index=1)  # default to q–φ map (item 5)
+cut_options = []
+if "q_image" in active_products:
+    cut_options.append(f"q_image ({_bx}–qz)")
+if "qphi" in active_products:
+    cut_options.append("q–φ map")
 
-if cut_source.startswith("q_image"):
-    cut_dir = lc2.selectbox(
-        "Direction",
-        [f"{_bx}-cut  (I vs {_bx}, fixed qz band)",
-         f"qz-cut  (I vs qz, fixed {_bx} band)"],
-        index=0)
-    _is_qr = cut_dir.startswith(_bx)
-    centers_lab = "qz center(s)" if _is_qr else f"{_bx} center(s)"
-    width_lab = "qz width" if _is_qr else f"{_bx} width"
-    def_centers, def_width = ("0.0", 0.05)
+if cut_options:
+    st.subheader("✂️ Line-cuts")
+    lc1, lc2, lc3, lc4 = st.columns([1.3, 1.6, 1.3, 1])
+    cut_source = lc1.selectbox(
+        "Cut on", cut_options,
+        index=1 if len(cut_options) > 1 else 0)
+
+    if cut_source.startswith("q_image"):
+        cut_dir = lc2.selectbox(
+            "Direction",
+            [f"{_bx}-cut  (I vs {_bx}, fixed qz band)",
+             f"qz-cut  (I vs qz, fixed {_bx} band)"],
+            index=0)
+        _is_qr = cut_dir.startswith(_bx)
+        centers_lab = "qz center(s)" if _is_qr else f"{_bx} center(s)"
+        width_lab = "qz width" if _is_qr else f"{_bx} width"
+        def_centers, def_width = ("0.0", 0.05)
+    else:
+        cut_dir = lc2.selectbox(
+            "Direction",
+            ["q-cut  (I vs φ, fixed q band)", "φ-cut  (I vs q, fixed φ band)"],
+            index=0)
+        _is_qcut = cut_dir.startswith("q-cut")
+        centers_lab = "q center(s)" if _is_qcut else "φ center(s)"
+        width_lab = "q width" if _is_qcut else "φ width"
+        def_centers, def_width = ("1.0", 0.05) if _is_qcut else ("0", 10.0)
+
+    centers_txt = lc3.text_input(
+        centers_lab, value=def_centers,
+        help="Comma / space separated; one profile per center.")
+    width = lc4.number_input(width_lab, value=float(def_width), min_value=0.0,
+                             step=0.01, format="%.3f")
+    centers = _parse_centers(centers_txt)
 else:
-    cut_dir = lc2.selectbox(
-        "Direction",
-        ["q-cut  (I vs φ, fixed q band)", "φ-cut  (I vs q, fixed φ band)"],
-        index=0)
-    _is_qcut = cut_dir.startswith("q-cut")
-    centers_lab = "q center(s)" if _is_qcut else "φ center(s)"
-    width_lab = "q width" if _is_qcut else "φ width"
-    def_centers, def_width = ("1.0", 0.05) if _is_qcut else ("0", 10.0)
-
-centers_txt = lc3.text_input(centers_lab, value=def_centers,
-                             help="Comma / space separated; one profile per center.")
-width = lc4.number_input(width_lab, value=float(def_width), min_value=0.0,
-                         step=0.01, format="%.3f")
-centers = _parse_centers(centers_txt)
+    st.info("Select q_image or q–φ above to enable line-cuts.")
 
 # Compute the cut profiles and the band rectangles to overlay on the map.
 cut_curves = []          # list of (name, xarr, yarr)
@@ -353,84 +385,98 @@ if centers:
                         fillcolor=_band_color, line=dict(color=_line_color, width=1)))
 
 # ===========================================================================
-# Four panels: A raw · B q-image · C q–φ · D circular average
+# Selected scattering panels
 # ===========================================================================
 st.divider()
-# Selected frame name as a title over the A–D panels (item 2).
 st.markdown(f"### 🖼️ {sel['stem']}")
-rowA = st.columns(2)
-rowB = st.columns(2)
 
-# A) stitched raw image ------------------------------------------------------
-with rowA[0]:
-    if sel["has_raw"]:
-        raw = load_raw(sel["raw"])
-        z = raw.astype(float).copy()
-        z[~np.isfinite(z)] = np.nan
-        z[z <= 0] = np.nan                     # negatives / gaps → dark
-        # Flip vertically so the image reads right-side-up with a lower-left
-        # origin (item 3): detector row 0 is the top, so row 0 must sit at the
-        # top of the plot while y still increases upward.
+
+def _render_image(path, title, *, flip=False):
+    if not path:
+        st.info(f"No {title.lower()} for this frame.")
+        return
+    raw = load_raw(path)
+    z = raw.astype(float)
+    # QC PNGs can be RGB/RGBA; use a luminance-like average for the shared
+    # heatmap renderer while preserving the same panel behavior as raw images.
+    if z.ndim == 3:
+        z = z[..., :3].mean(axis=2)
+    z[~np.isfinite(z)] = np.nan
+    z[z <= 0] = np.nan
+    if flip:
         z = np.flipud(z)
-        # Real pixel coordinate axes so the x/y (px) limits are meaningful even
-        # after downsampling (item 1).
-        ny0, nx0 = z.shape
-        px_x, px_y = np.arange(nx0), np.arange(ny0)
-        z, px_x, px_y = _downsample(z, px_x, px_y)
-        # y_reverse=False → origin at lower-left (y increases upward).
-        fig = _heatmap_fig("A · stitched raw", z, px_x, px_y,
-                           "x (px)", "y (px)", y_reverse=False,
-                           vmin_I=a_vmin, vmax_I=a_vmax,
-                           x_range=a_xr, y_range=a_yr, aspect=_aspect_arg())
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No stitched raw image for this frame.")
+    ny0, nx0 = z.shape
+    px_x, px_y = np.arange(nx0), np.arange(ny0)
+    z, px_x, px_y = _downsample(z, px_x, px_y)
+    fig = _heatmap_fig(
+        title, z, px_x, px_y, "x (px)", "y (px)", y_reverse=False,
+        vmin_I=a_vmin, vmax_I=a_vmax, x_range=a_xr, y_range=a_yr,
+        aspect=_aspect_arg(),
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
-# B) q-image (qx–qz or qr–qz) ------------------------------------------------
-with rowA[1]:
-    if sel["has_qimg"]:
-        qimg, qx, qz, qmask, b_xlab = resolve_qimage(_qimg_data, b_mode)
-        z = _apply_mask(qimg, qmask)
-        z, xx, yy = _downsample(z, qx, qz)
-        # Overlay shapes are in data coords, so downsampling doesn't affect them.
-        fig = _heatmap_fig("B · q-image", z, xx, yy, b_xlab, "qz (Å⁻¹)",
-                           shapes=qimg_shapes, vmin_I=b_vmin, vmax_I=b_vmax,
-                           x_range=b_qxr, y_range=b_qzr, aspect=_aspect_arg())
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No q_image for this frame.")
 
-# C) q–φ map -----------------------------------------------------------------
-with rowB[0]:
-    if sel["has_qphi"]:
-        q, phi, qphi, pmask = load_qphi(sel["qphi"])
-        pmask = pmask if getattr(pmask, "shape", None) == getattr(qphi, "shape", None) else None
-        z = _apply_mask(qphi, pmask)
-        fig = _heatmap_fig("C · q–φ map", z, q, phi, "q (Å⁻¹)", "φ (deg)",
-                           xlog=logq, shapes=qphi_shapes,
-                           vmin_I=c_vmin, vmax_I=c_vmax,
-                           x_range=c_qr, y_range=c_phir)
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No qphi map for this frame.")
+def _render_panel(panel):
+    """Render one selected product; unavailable frames stay localized."""
+    if panel == "stitched":
+        if sel["has_raw"]:
+            _render_image(sel["raw"], "A · stitched raw", flip=True)
+        else:
+            st.info("No stitched raw image for this frame.")
+    elif panel == "qc":
+        if sel["has_qc"]:
+            _render_image(sel["qc"], "QC image")
+        else:
+            st.info("No QC image for this frame.")
+    elif panel == "q_image":
+        if sel["has_qimg"] and _qimg_data is not None:
+            qimg, qx, qz, qmask, b_xlab = resolve_qimage(_qimg_data, b_mode)
+            z = _apply_mask(qimg, qmask)
+            z, xx, yy = _downsample(z, qx, qz)
+            fig = _heatmap_fig(
+                "B · q-image", z, xx, yy, b_xlab, "qz (Å⁻¹)",
+                shapes=qimg_shapes, vmin_I=b_vmin, vmax_I=b_vmax,
+                x_range=b_qxr, y_range=b_qzr, aspect=_aspect_arg())
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No q-image for this frame.")
+    elif panel == "qphi":
+        if sel["has_qphi"]:
+            q, phi, qphi, pmask = load_qphi(sel["qphi"])
+            pmask = pmask if getattr(pmask, "shape", None) == getattr(qphi, "shape", None) else None
+            z = _apply_mask(qphi, pmask)
+            fig = _heatmap_fig(
+                "C · q–φ map", z, q, phi, "q (Å⁻¹)", "φ (deg)",
+                xlog=logq, shapes=qphi_shapes, vmin_I=c_vmin,
+                vmax_I=c_vmax, x_range=c_qr, y_range=c_phir)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No q–φ map for this frame.")
+    elif panel == "cir_avg":
+        if sel["has_cir"]:
+            qq, ii = load_cir(sel["cir"])
+            tk = _apply_curve_style(
+                dict(x=qq, y=ii, name="I(q)",
+                     hovertemplate="q=%{x:.4f}<br>I=%{y:.3g}<extra></extra>"),
+                d_style, base_color="crimson")
+            fig = go.Figure(go.Scatter(**tk))
+            fig.update_xaxes(title_text="q (Å⁻¹)", range=_axrange(d_qr[0], d_qr[1], logq))
+            fig.update_yaxes(title_text="I(q)", range=_axrange(d_ir[0], d_ir[1], logiq))
+            _style_1d_axes(fig, logq, logiq)
+            fig.update_layout(title="D · circular average", height=_PANEL_H,
+                              template="plotly_white", margin=dict(l=60, r=15, t=40, b=45))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No circular average for this frame.")
 
-# D) circular average --------------------------------------------------------
-with rowB[1]:
-    if sel["has_cir"]:
-        qq, ii = load_cir(sel["cir"])
-        tk = _apply_curve_style(
-            dict(x=qq, y=ii, name="I(q)",
-                 hovertemplate="q=%{x:.4f}<br>I=%{y:.3g}<extra></extra>"),
-            d_style, base_color="crimson")
-        fig = go.Figure(go.Scatter(**tk))
-        fig.update_xaxes(title_text="q (Å⁻¹)", range=_axrange(d_qr[0], d_qr[1], logq))
-        fig.update_yaxes(title_text="I(q)", range=_axrange(d_ir[0], d_ir[1], logiq))
-        _style_1d_axes(fig, logq, logiq)
-        fig.update_layout(title="D · circular average", height=_PANEL_H,
-                          template="plotly_white", margin=dict(l=60, r=15, t=40, b=45))
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No circular average for this frame.")
+
+panel_order = [p for p in ("stitched", "qc", "q_image", "qphi", "cir_avg")
+               if p in active_products]
+for start in range(0, len(panel_order), 2):
+    row = st.columns(2)
+    for col, panel in zip(row, panel_order[start:start + 2]):
+        with col:
+            _render_panel(panel)
 
 # ===========================================================================
 # Line-cut result plot + export
@@ -496,5 +542,5 @@ if centers:
 with st.expander("📋 Frame table", expanded=False):
     st.dataframe(
         work[["stem", "th", "well", "timestamp",
-              "has_raw", "has_qimg", "has_qphi", "has_cir"]],
+              "has_raw", "has_qc", "has_qimg", "has_qphi", "has_cir"]],
         use_container_width=True, hide_index=True)

@@ -1,0 +1,40 @@
+# Copy this file to ~/.config/pyViz.conf (or set NANOORGANIZER_CONFIG) and
+# replace password hashes with real SHA-256 hashes.  Do not commit the real
+# file: it contains local filesystem paths and credentials.
+
+[application]
+# Access and location are independent.  The access mode can be admin, user,
+# or local.  The site can be beamline/onsite or off_beamline/offsite.
+access_mode = admin
+site = off_beamline
+beamline = smi
+
+# This is the initial folder shown by the browser on the current workstation.
+# It is optional; the data roots below are enough for navigation.
+start_dir = /home/yuzhang/NSLS_II_Link/smi_remote/2026-2/pass-319371/projects/microbeam_Kim/Results
+
+[paths]
+# {beamline} is replaced with smi or cms.  Add more entries with semicolons
+# or one entry per line when a site has multiple equivalent mounts.
+off_beamline = /home/yuzhang/NSLS_II_Link/{beamline}_remote
+on_beamline = /nsls2/data1/{beamline}/proposals
+
+[admin]
+# The default administrator name is yuzhang.  all_paths=true means every path
+# readable by the server process is allowed; the [paths] entries still control
+# the beamline/off-beamline data-location picker.
+username = yuzhang
+password_hash = REPLACE_WITH_SHA256_HASH
+all_paths = true
+
+# Optional per-user mapping.  A compact entry may contain comma-separated
+# folders:
+# [users]
+# alice = /data/alice, /data/shared
+
+# The extended form adds login credentials and location-specific scopes:
+# [user.alice]
+# password_hash = REPLACE_WITH_SHA256_HASH
+# paths = /data/alice
+# off_beamline_paths = /home/alice/beamline_copy
+# beamline_paths = /nsls2/data1/smi/proposals/2026-2/pass-123456

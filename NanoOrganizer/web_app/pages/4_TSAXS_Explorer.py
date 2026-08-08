@@ -80,6 +80,12 @@ except Exception:  # pragma: no cover - standalone fallback
     def follow_site(picker_key, site, beamline="smi"):
         return None
 
+try:
+    from NanoOrganizer.web_app.components.scattering import scattering_product_selector
+except Exception:  # pragma: no cover - standalone fallback
+    def scattering_product_selector(key, path):
+        return path, [], []
+
 # Shared scattering engine (aliased to the underscore names used below).
 from NanoOrganizer.web_app.components.scattering import (
     CMAPS, index_frames, load_raw, load_qphi, load_cir, heatmap_fig,
@@ -129,12 +135,12 @@ with st.sidebar:
     if _HAVE_BROWSER:
         analysis = folder_picker(
             key="tsaxs_analysis",
-            label="analysis/ dir (has qphi/ cir_avg/; raw/ is a sibling)",
+            label="Data path (analysis/ or one product folder)",
             default=default_analysis,
         )
     else:
         analysis = st.text_input(
-            "analysis/ dir (has qphi/ cir_avg/; raw/ is a sibling)",
+            "Data path (analysis/ or one product folder)",
             value=default_analysis)
         if _HAVE_SECURITY and analysis and not is_path_allowed(
             analysis, allow_nonexistent=True
@@ -142,6 +148,9 @@ with st.sidebar:
             st.error("Folder outside allowed roots (secure mode).")
             st.stop()
 
+    analysis_root, products, selected_products = scattering_product_selector(
+        "tsaxs_products", analysis
+    )
     raw_subdir = st.selectbox(
         "Raw image folder (relative to analysis/)", RAW_SUBDIR_CHOICES, index=0,
         accept_new_options=True,
@@ -150,16 +159,19 @@ with st.sidebar:
 
     if st.button("🔄 Rescan"):
         index_frames.clear()
-    if not analysis:
+    if not analysis or not selected_products:
+        if analysis and products:
+            st.warning("Select at least one product panel to continue.")
         st.stop()
 
-    df = index_frames(analysis, raw_subdir=raw_subdir or RAW_SUBDIR)
+    df = index_frames(analysis_root, raw_subdir=raw_subdir or RAW_SUBDIR)
     if df.empty:
-        st.warning("No raw/ qphi/ or cir_avg/ files found for this folder.")
+        st.warning("No frame files found in the selected scattering products.")
         st.stop()
     st.success(
         f"{len(df)} frames — "
-        f"{int(df['has_raw'].sum())} raw · {int(df['has_qimg'].sum())} q-img · "
+        f"{int(df['has_raw'].sum())} raw · {int(df['has_qc'].sum())} QC · "
+        f"{int(df['has_qimg'].sum())} q-img · "
         f"{int(df['has_qphi'].sum())} q–φ · {int(df['has_cir'].sum())} 1D.")
 
     hide_cal = st.checkbox("Hide calibration", value=True)
@@ -178,6 +190,7 @@ if work.empty:
     st.stop()
 
 # --- Frame picker -----------------------------------------------------------
+active_products = set(selected_products)
 c1, c2 = st.columns([4, 1])
 labels = work["stem"].tolist()
 chosen = c1.selectbox("Frame", options=labels, index=0) if len(labels) > 1 else labels[0]
@@ -253,30 +266,35 @@ with st.expander("🎛️ Ranges & colour scaling (blank = auto)", expanded=Fals
 # Line-cut controls (q–φ only for transmission)
 # ===========================================================================
 st.divider()
-st.subheader("✂️ Line-cuts (q–φ)")
+_is_qcut = False
+centers = []
+if "qphi" in active_products:
+    st.subheader("✂️ Line-cuts (q–φ)")
+    lc2, lc3, lc4 = st.columns([1.6, 1.3, 1])
+    cut_dir = lc2.selectbox(
+        "Direction",
+        ["q-cut  (I vs φ, fixed q band)", "φ-cut  (I vs q, fixed φ band)"],
+        index=0)
+    _is_qcut = cut_dir.startswith("q-cut")
+    centers_lab = "q center(s)" if _is_qcut else "φ center(s)"
+    width_lab = "q width" if _is_qcut else "φ width"
+    def_centers, def_width = ("1.0", 0.05) if _is_qcut else ("0", 10.0)
 
-lc2, lc3, lc4 = st.columns([1.6, 1.3, 1])
-cut_dir = lc2.selectbox(
-    "Direction",
-    ["q-cut  (I vs φ, fixed q band)", "φ-cut  (I vs q, fixed φ band)"],
-    index=0)
-_is_qcut = cut_dir.startswith("q-cut")
-centers_lab = "q center(s)" if _is_qcut else "φ center(s)"
-width_lab = "q width" if _is_qcut else "φ width"
-def_centers, def_width = ("1.0", 0.05) if _is_qcut else ("0", 10.0)
-
-centers_txt = lc3.text_input(centers_lab, value=def_centers,
-                             help="Comma / space separated; one profile per center.")
-width = lc4.number_input(width_lab, value=float(def_width), min_value=0.0,
-                         step=0.01, format="%.3f")
-centers = _parse_centers(centers_txt)
+    centers_txt = lc3.text_input(
+        centers_lab, value=def_centers,
+        help="Comma / space separated; one profile per center.")
+    width = lc4.number_input(width_lab, value=float(def_width), min_value=0.0,
+                             step=0.01, format="%.3f")
+    centers = _parse_centers(centers_txt)
+else:
+    st.info("Select the q–φ product above to enable line-cuts.")
 
 cut_curves = []          # list of (name, xarr, yarr)
 qphi_shapes = []
 _band_color = "rgba(255,0,0,0.15)"
 _line_color = "crimson"
 
-if centers and sel["has_qphi"]:
+if centers and "qphi" in active_products and sel["has_qphi"]:
     q, phi, qphi, pmask = load_qphi(sel["qphi"])
     pmask = pmask if getattr(pmask, "shape", None) == getattr(qphi, "shape", None) else None
     if qphi is not None:
@@ -310,7 +328,9 @@ rowB = st.columns(2)
 
 # A) raw image ---------------------------------------------------------------
 with rowA[0]:
-    if sel["has_raw"]:
+    if "stitched" not in active_products:
+        pass
+    elif sel["has_raw"]:
         raw = load_raw(sel["raw"])
         z = raw.astype(float).copy()
         z[~np.isfinite(z)] = np.nan
@@ -323,12 +343,14 @@ with rowA[0]:
                            y_reverse=False, vmin_I=a_vmin, vmax_I=a_vmax,
                            x_range=a_xr, y_range=a_yr, aspect=_aspect_arg())
         st.plotly_chart(fig, use_container_width=True)
-    else:
+    elif "stitched" in active_products:
         st.info("No raw image for this frame.")
 
 # B) q-image (reserved — no remesh for transmission data yet) ----------------
 with rowA[1]:
-    if sel["has_qimg"]:
+    if "q_image" not in active_products:
+        pass
+    elif sel["has_qimg"]:
         from NanoOrganizer.web_app.components.scattering import load_qimg, resolve_qimage
         data = load_qimg(sel["qimg"])
         qimg, qx, qz, qmask, b_xlab = resolve_qimage(data, "qx")
@@ -337,14 +359,16 @@ with rowA[1]:
         fig = _heatmap_fig("B · q-image", z, xx, yy, b_xlab, "qz (Å⁻¹)",
                            vmin_I=None, vmax_I=None, aspect=_aspect_arg())
         st.plotly_chart(fig, use_container_width=True)
-    else:
+    elif "q_image" in active_products:
         st.info("🔧 **q-image** — no qx–qz remesh exists for this transmission "
                 "dataset yet. This panel is reserved: it will render "
                 "automatically once `q_image/qimg_*.npz` files are produced.")
 
 # C) q–φ map -----------------------------------------------------------------
 with rowB[0]:
-    if sel["has_qphi"]:
+    if "qphi" not in active_products:
+        pass
+    elif sel["has_qphi"]:
         q, phi, qphi, pmask = load_qphi(sel["qphi"])
         pmask = pmask if getattr(pmask, "shape", None) == getattr(qphi, "shape", None) else None
         z = _apply_mask(qphi, pmask)
@@ -353,12 +377,14 @@ with rowB[0]:
                            vmin_I=c_vmin, vmax_I=c_vmax,
                            x_range=c_qr, y_range=c_phir)
         st.plotly_chart(fig, use_container_width=True)
-    else:
+    elif "qphi" in active_products:
         st.info("No qphi map for this frame.")
 
 # D) I(q) circular average ---------------------------------------------------
 with rowB[1]:
-    if sel["has_cir"]:
+    if "cir_avg" not in active_products:
+        pass
+    elif sel["has_cir"]:
         qq, ii = load_cir(sel["cir"])
         tk = _apply_curve_style(
             dict(x=qq, y=ii, name="I(q)",
@@ -371,8 +397,17 @@ with rowB[1]:
         fig.update_layout(title="D · I(q)", height=_PANEL_H,
                           template="plotly_white", margin=dict(l=60, r=15, t=40, b=45))
         st.plotly_chart(fig, use_container_width=True)
-    else:
+    elif "cir_avg" in active_products:
         st.info("No circular average for this frame.")
+
+if "qc" in active_products:
+    st.subheader("QC image")
+    qc_cols = st.columns(2)
+    with qc_cols[0]:
+        if sel["has_qc"]:
+            st.image(sel["qc"], caption="QC image", use_container_width=True)
+        else:
+            st.info("No QC image for this frame.")
 
 # ===========================================================================
 # Line-cut result plot + export
@@ -429,5 +464,5 @@ if centers:
 with st.expander("📋 Frame table", expanded=False):
     st.dataframe(
         work[["stem", "well", "timestamp",
-              "has_raw", "has_qimg", "has_qphi", "has_cir"]],
+              "has_raw", "has_qc", "has_qimg", "has_qphi", "has_cir"]],
         use_container_width=True, hide_index=True)
