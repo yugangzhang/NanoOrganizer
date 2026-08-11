@@ -422,11 +422,13 @@ def load_cir(fpath: str):
 def apply_mask(z, mask):
     """Return a float copy with no-data entries set to NaN.
 
-    The auto-reduction marks the masked-out region (beamstop, detector gaps,
-    off-detector remesh pixels) two ways, and we honour both:
+    The auto-reduction marks the remeshed support (beamstop, detector gaps,
+    off-detector pixels) two ways, and we honour both:
 
-    * ``mask == True`` flags the *no-data* region; those pixels are blanked when
-      the mask shape matches.
+    * A matching boolean mask is interpreted from its overlap with positive
+      intensity pixels. Current CMS/SMI q-image files use ``True`` for valid
+      remeshed pixels, while some older products use ``True`` for no-data.
+      Inferring the orientation prevents a valid q-image from being blanked.
     * Remeshed / caked maps store no-data as literal ``0`` (and any non-finite
       value), so non-positive pixels are blanked as well.
 
@@ -435,7 +437,17 @@ def apply_mask(z, mask):
     """
     z = np.asarray(z, float).copy()
     if mask is not None and getattr(mask, "shape", None) == z.shape:
-        z[mask.astype(bool)] = np.nan          # mask True == masked-out
+        mask = np.asarray(mask, dtype=bool)
+        positive = np.isfinite(z) & (z > 0)
+        # The convention with more positive pixels is the data-support
+        # convention. In the current reduction, qimg_mask is True almost
+        # exactly where qimg is positive.
+        true_support = np.count_nonzero(mask & positive)
+        false_support = np.count_nonzero(~mask & positive)
+        if true_support >= false_support:
+            z[~mask] = np.nan                 # mask True == valid data
+        else:
+            z[mask] = np.nan                  # mask True == no data
     z[~np.isfinite(z)] = np.nan
     z[z <= 0] = np.nan                          # 0 == no data in remeshed maps
     return z
