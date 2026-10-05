@@ -1,5 +1,14 @@
 # NanoOrganizer Web GUI Suite
 
+> **Superseded.** This describes the old fourteen-page layout. The app is now a
+> five-step workflow (Project → Explore → Visualize → Analyze → Compare) with
+> technique chosen inside the Visualize page — see **[web_app.md](web_app.md)**.
+>
+> The pages described below still exist on disk and can be run directly, but
+> they are no longer listed in the sidebar. Installation and the general-purpose
+> tools (Universal Plotter, Test Data Generator, Data Manager) are still
+> accurate.
+
 Complete guide to all web-based visualization and management tools.
 
 ---

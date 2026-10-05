@@ -175,8 +175,8 @@ def main():
 
         if missing:
             print("\n2. Reinstall NanoOrganizer to register console scripts:")
-            print("   cd /home/yuzhang/Repos/NanoOrganizer")
-            print("   sudo rm -rf Nanoorganizer.egg-info build dist")
+            print("   cd <your checkout of NanoOrganizer>")
+            print("   rm -rf nanoorganizer.egg-info build dist")
             print("   pip install -e \".[web,image]\"")
 
         print("\n3. Test the installation:")

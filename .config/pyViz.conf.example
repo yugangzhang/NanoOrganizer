@@ -1,40 +1,52 @@
-# Copy this file to ~/.config/pyViz.conf (or set NANOORGANIZER_CONFIG) and
-# replace password hashes with real SHA-256 hashes.  Do not commit the real
-# file: it contains local filesystem paths and credentials.
+# Example access configuration for the NanoOrganizer web app.
+#
+# Copy to ~/.config/pyViz.conf, or set NANOORGANIZER_CONFIG to point elsewhere.
+# A project-local .config/pyViz.conf is also found automatically.
+#
+# DO NOT COMMIT THE REAL FILE: it contains local filesystem paths and password
+# hashes. Keep it readable only by you (chmod 600 — viz-adduser does this).
+#
+# None of this is needed on a single-user workstation. With no configuration
+# file at all the app runs in `local` mode and browses whatever the account
+# running it can read.
 
 [application]
-# Access and location are independent.  The access mode can be admin, user,
-# or local.  The site can be beamline/onsite or off_beamline/offsite.
-access_mode = admin
-site = off_beamline
-beamline = smi
+# admin — login required, then the whole filesystem the process can read
+# user  — login required, each account sees only its own roots
+# local — no login; trusts whoever is at the keyboard (the default)
+access_mode = user
 
-# This is the initial folder shown by the browser on the current workstation.
-# It is optional; the data roots below are enough for navigation.
-start_dir = /home/yuzhang/NSLS_II_Link/smi_remote/2026-2/pass-319371/projects/microbeam_Kim/Results
+# Folder the file browser opens on. Optional.
+start_dir = /data/projects
 
 [paths]
-# {beamline} is replaced with smi or cms.  Add more entries with semicolons
-# or one entry per line when a site has multiple equivalent mounts.
-off_beamline = /home/yuzhang/NSLS_II_Link/{beamline}_remote
-on_beamline = /nsls2/data1/{beamline}/proposals
+# Extra roots offered to every logged-in user, on top of their own.
+# One per line, or separated by commas or semicolons.
+extra_roots =
+    /data/shared
+    /data/reference
 
 [admin]
-# The default administrator name is yuzhang.  all_paths=true means every path
-# readable by the server process is allowed; the [paths] entries still control
-# the beamline/off-beamline data-location picker.
-username = yuzhang
+# A single privileged account. all_paths grants everything readable by the
+# server process; omit it and the account is limited to its own roots.
+username = owner
 password_hash = REPLACE_WITH_SHA256_HASH
 all_paths = true
 
-# Optional per-user mapping.  A compact entry may contain comma-separated
-# folders:
-# [users]
-# alice = /data/alice, /data/shared
+[users]
+# Who may log in, and whether they are privileged.
+alice = user
+bob = user
 
-# The extended form adds login credentials and location-specific scopes:
-# [user.alice]
-# password_hash = REPLACE_WITH_SHA256_HASH
-# paths = /data/alice
-# off_beamline_paths = /home/alice/beamline_copy
-# beamline_paths = /nsls2/data1/smi/proposals/2026-2/pass-123456
+[user:alice]
+# Each account's credentials and the folders it may browse. Subfolders are
+# included automatically; a non-admin with no roots gets no access at all.
+# A leading ~ expands, and {username} becomes the account name.
+password_hash = REPLACE_WITH_SHA256_HASH
+roots =
+    /data/projects/alice
+    /scratch/{username}
+
+[user:bob]
+password_hash = REPLACE_WITH_SHA256_HASH
+roots = /data/projects/bob
